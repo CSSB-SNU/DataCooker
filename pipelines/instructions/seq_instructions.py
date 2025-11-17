@@ -4,7 +4,7 @@ from typing import TypeVar
 
 from numpy.typing import NDArray
 
-from biomol.cif.mol import CIFMol
+from pipelines.cifmol import CIFMol
 
 InputType = TypeVar("InputType", str, int, float)
 FeatureType = TypeVar("FeatureType")
@@ -33,7 +33,7 @@ def single_value_instruction(
     return _worker
 
 
-def graph_to_canonical_sequence(
+def graph_to_canonical_sequence(  # noqa: PLR0912, PLR0915
     seq_list: Iterable[str],
     src_indices: Iterable[int],
     dst_indices: Iterable[int],
@@ -273,7 +273,6 @@ def build_seq_hash_map() -> Callable[..., type[InputType]]:
         seq_hash = 0
 
         for header, sequence in fasta_dict.items():
-            cif_ID = header.split("|")[0].strip().split("_")[0]
             mol_type = header.split("|")[1].strip()
             match mol_type:
                 case "polypeptide(L)":
@@ -302,8 +301,7 @@ def build_seq_hash_map() -> Callable[..., type[InputType]]:
         for key, value in seq_hash_map.items():
             sequence = key[1:]
             new_seq_hash_map[value] = sequence
-        seq_hash_map = new_seq_hash_map
+        return new_seq_hash_map
 
-        return seq_hash_map
 
     return _worker

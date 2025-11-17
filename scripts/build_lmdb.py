@@ -90,7 +90,7 @@ def build(
             msg = f"Invalid shard index {shard_idx} for {n_shards} shards."
             raise click.BadParameter(msg)
         # Split CIF list into n_shards and take only the shard_idx part
-        data_list = [data for i, data in enumerate(data_list) if i % n_shards == shard_idx]  # noqa: E501
+        data_list = [data for i, data in enumerate(data_list) if i % n_shards == shard_idx]
         click.echo(
             f"Processing shard {shard_idx}/{n_shards} with {len(data_list)} files.",
         )
@@ -130,7 +130,7 @@ def merge(shard_pattern: str, output: Path, map_size: float, overwrite: bool) ->
 
     Example:
         python cif_lmdb.py merge "/data/BioMolDBv2_2024Oct21/cif_shard*.lmdb" -o /data/BioMolDBv2_2024Oct21/cif_merged.lmdb
-    """  # noqa: E501
+    """
     map_size = int(map_size)
 
     # Expand wildcard pattern

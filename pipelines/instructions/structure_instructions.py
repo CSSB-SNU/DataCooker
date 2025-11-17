@@ -2,11 +2,11 @@ from collections.abc import Callable
 from typing import TypeVar
 
 import numpy as np
-from numpy.typing import NDArray
-
-from biomol.cif.mol import CIFMol
 from biomol.core.container import FeatureContainer
 from biomol.core.feature import EdgeFeature
+from numpy.typing import NDArray
+
+from pipelines.cifmol import CIFMol
 
 InputType = TypeVar("InputType", str, int, float)
 FeatureType = TypeVar("FeatureType")
@@ -35,7 +35,7 @@ def single_value_instruction(
     return _worker
 
 
-def neighbor_list_grid(  # noqa: C901, PLR0912, PLR0915
+def neighbor_list_grid(  # noqa: PLR0912, PLR0915
     xyz: np.ndarray,
     d_thr: float,
     n_max: int,

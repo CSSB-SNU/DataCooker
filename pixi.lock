@@ -93,7 +93,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-3.23.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/zstd-1.5.7-hb8e6e7a_2.conda
       - pypi: https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz
-      - pypi: git+https://github.com/CSSB-SNU/BioMol.git#4fbdd52af9a89b0daf4206da0abbc0ea4aa6bb67
+      - pypi: git+https://github.com/CSSB-SNU/BioMol.git?rev=fc1a05b#fc1a05b6417c4e92e2d85c75fd696a26259e9513
       - pypi: https://files.pythonhosted.org/packages/98/78/01c019cdb5d6498122777c1a43056ebb3ebfeef2076d9d026bfe15583b2b/click-8.3.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/1e/e8/685f47e0d754320684db4425a0967f7d3fa70126bffd76110b7009a0090f/joblib-1.5.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/2a/4d/8e6be8d7d5a30d47fa0ce4b55e3a8050ad689556e6e979d206b4ac67b733/lmdb-1.7.5-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
@@ -101,7 +101,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/e3/94/1843518e420fa3ed6919835845df698c7e27e183cb997394e4a670973a65/omegaconf-2.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/74/27/e5b8f34d02d9995b80abcef563ea1f8b56d20134d8f4e5e81733b1feceb2/pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/63/4b/e3678b4e776db00f9f7b2fe58e547e8928ef32727d7a1ff01dea010f3f13/zstandard-0.25.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      - pypi: .
+      - pypi: ./
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_libgcc_mutex-0.1-conda_forge.tar.bz2
   sha256: fe51de6107f9edc7aa4f786a70f4a883943bc9d39b3bb7307c04c41410990726
@@ -167,7 +167,7 @@ packages:
   - pkg:pypi/asttokens?source=hash-mapping
   size: 28206
   timestamp: 1733250564754
-- pypi: git+https://github.com/CSSB-SNU/BioMol.git#4fbdd52af9a89b0daf4206da0abbc0ea4aa6bb67
+- pypi: git+https://github.com/CSSB-SNU/BioMol.git?rev=fc1a05b#fc1a05b6417c4e92e2d85c75fd696a26259e9513
   name: biomol
   version: 0.2.0
   requires_dist:
@@ -267,10 +267,10 @@ packages:
   purls: []
   size: 48397
   timestamp: 1761175097707
-- pypi: .
+- pypi: ./
   name: datacooker
   version: 0.1.0
-  sha256: 870464b2986b8919e477e21d22e52cd82a666b519df2b68b4180a0ec57140acb
+  sha256: 7b321f210ffa997deb8b1b9120f06e7782316a440ee0d5e5243f08a4656f3996
   requires_dist:
   - biopython>=1.85,<2
   - click>=8.1.8,<9
@@ -281,7 +281,7 @@ packages:
   - typing-extensions>=4.15.0,<5
   - numpy>=2.2.6,<3
   - networkx>=3.2
-  - biomol @ git+https://github.com/CSSB-SNU/BioMol.git
+  - biomol @ git+https://github.com/CSSB-SNU/BioMol.git@fc1a05b
   requires_python: '>=3.10'
   editable: true
 - conda: https://conda.anaconda.org/conda-forge/linux-64/debugpy-1.8.17-py313h5d5ffb9_0.conda

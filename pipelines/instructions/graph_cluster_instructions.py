@@ -1,25 +1,18 @@
-import re
-import string
-from collections import defaultdict, deque
-from collections.abc import Callable
-from typing import TypeVar, Iterable
+import itertools
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable
+from pathlib import Path
+from typing import TypeVar
 
 import networkx as nx
 import numpy as np
-from numpy.typing import NDArray
-from pathlib import Path
-
 from biomol.core.container import FeatureContainer
-from biomol.core.feature import NodeFeature, EdgeFeature
-from biomol.core.utils import to_bytes
-from biomol.mapping import ResidueMapping
-from biomol.cif.mol import CIFMol
+from biomol.core.feature import EdgeFeature, NodeFeature
 from joblib import Parallel, delayed
-import itertools
-from collections import Counter, defaultdict
 
-from postprocessing.instructions.seq_instructions import graph_to_canonical_sequence
-
+from pipelines.cifmol import CIFMol
+from pipelines.instructions.seq_instructions import graph_to_canonical_sequence
+from pipelines.utils.convert import to_bytes
 
 InputType = TypeVar("InputType", str, int, float)
 FeatureType = TypeVar("FeatureType")
@@ -83,7 +76,7 @@ def extract_graph_per_cifmol() -> Callable[..., bytes]:
                     mol_identifier = "X"
 
             seq_hash_list = seq_to_seq_hash_list[seq]
-            seq_hash = [h for h in seq_hash_list if h.startswith(mol_identifier)][0]
+            seq_hash = next(h for h in seq_hash_list if h.startswith(mol_identifier))
             chain_id_to_cluster[full_chain_id] = seq_hash_to_cluster[seq_hash]
 
         # chain level contact graph
@@ -240,12 +233,13 @@ def build_graph_hash(n_jobs: int = -1) -> Callable[..., type[InputType]]:
             start_idx: Starting integer for cluster IDs.
             n_jobs:    Parallel workers for invariant computation; use -1 for all cores.
 
-        Returns:
+        Returns
         -------
             unique_map: {cluster_id -> representative Graph}
             gid_to_id:  {input_key -> cluster_id}
 
-        Notes:
+        Notes
+        -----
             - Bucketing by invariants prunes most non-isomorphic pairs before exact checks.
             - Exact checks use GraphMatcher with categorical_node_match('label', None).
             - Determinism: per-bucket keys are processed in sorted order of input keys.
@@ -277,8 +271,8 @@ def build_graph_hash(n_jobs: int = -1) -> Callable[..., type[InputType]]:
             buckets[key].append(gid)
 
         # Sort keys inside each bucket for determinism
-        for key in buckets:
-            buckets[key].sort(key=lambda x: (str(type(x)), str(x)))
+        for values in buckets.values():
+            values.sort(key=lambda x: (str(type(x)), str(x)))
 
         # ---------- 3) Per-bucket exact clustering (isomorphism with labels) ----------
         # Use threading backend to avoid heavy pickling of NetworkX graphs.
@@ -299,7 +293,7 @@ def build_graph_hash(n_jobs: int = -1) -> Callable[..., type[InputType]]:
                 G = graph_map[gid]
                 placed = False
                 # Try match against existing representatives
-                for c_idx, (rep_gid, repG) in enumerate(reps):
+                for c_idx, (_, repG) in enumerate(reps):
                     GM = nx.isomorphism.GraphMatcher(G, repG, node_match=node_match)
                     if GM.is_isomorphic():
                         clusters[c_idx].append(gid)
@@ -318,7 +312,7 @@ def build_graph_hash(n_jobs: int = -1) -> Callable[..., type[InputType]]:
 
         # Flatten list of clusters
         clusters_all: list[tuple[list[str | int], str | int]] = list(
-            itertools.chain.from_iterable(bucket_results)
+            itertools.chain.from_iterable(bucket_results),
         )
 
         # ---------- 4) Assign global cluster IDs and build outputs ----------
@@ -337,7 +331,7 @@ def build_graph_hash(n_jobs: int = -1) -> Callable[..., type[InputType]]:
 class _UnionFind:
     """Disjoint-set (Union-Find) with path compression and union by rank."""
 
-    def __init__(self, elems: Iterable[int]):
+    def __init__(self, elems: Iterable[int]) -> None:
         self._index = {e: i for i, e in enumerate(sorted(elems))}
         n = len(self._index)
         self.parent = list(range(n))
@@ -369,7 +363,7 @@ class _UnionFind:
 
     def components(self) -> list[set[int]]:
         roots_to_members: dict[int, set[int]] = defaultdict(set)
-        for i, e in self.reverse.items():
+        for e in self.reverse.values():
             r = self.find(e)
             roots_to_members[r].add(e)
         # stable order by smallest member for determinism
@@ -394,12 +388,14 @@ def graph_edge_cluster(n_jobs: int = -1) -> Callable[..., type[InputType]]:
             unique_graphs: {graph_id -> NetworkX Graph} where each node has attribute 'label'.
             n_jobs:        Number of parallel workers for edge extraction (-1 = all cores).
 
-        Returns:
+        Returns
+        -------
             clusters: List of sets of graph_ids, one set per connected component.
             comp_map: Mapping {graph_id -> component_index} where components are 0..C-1
                     assigned in ascending order of each component's smallest graph_id.
 
-        Notes:
+        Notes
+        -----
             - Graphs with no edges (or single-node) become singleton clusters.
             - Uses threading backend implicitly (joblib default) to avoid heavy pickling.
             - Deterministic component indices via sorting by smallest member id.
@@ -427,7 +423,7 @@ def graph_edge_cluster(n_jobs: int = -1) -> Callable[..., type[InputType]]:
             return gid, sorted(keys)
 
         edge_key_lists: list[tuple[int, list[tuple[object, object]]]] = Parallel(
-            n_jobs=n_jobs, verbose=5
+            n_jobs=n_jobs, verbose=5,
         )(delayed(_extract_edge_keys)(gid) for gid in graph_ids)
 
         # --- 2) Build edge_key -> [graph_id, ...] inverted index ------------------

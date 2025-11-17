@@ -1,6 +1,6 @@
-from biomol.cif.mol import CIFMol
-from biomol.io.recipe import RecipeBook
-from postprocessing.instructions.graph_cluster_instructions import (
+from datacooker import RecipeBook
+from pipelines.cifmol import CIFMol
+from pipelines.instructions.graph_cluster_instructions import (
     extract_graph_per_cifmol,
 )
 

@@ -1,6 +1,6 @@
-from biomol.cif.mol import CIFMol
-from biomol.io.recipe import RecipeBook
-from postprocessing.instructions.seq_instructions import build_fasta
+from datacooker import RecipeBook
+from pipelines.cifmol import CIFMol
+from pipelines.instructions.seq_instructions import build_fasta
 
 """Build a CIFMol->fasta Cooker."""
 

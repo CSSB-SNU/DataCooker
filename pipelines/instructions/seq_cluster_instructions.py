@@ -1,30 +1,25 @@
-from pathlib import Path
-from collections import deque
-from collections.abc import Callable, Iterable
-from typing import TypeVar
-from anarci import run_anarci
-
 import os
+from collections.abc import Callable
+from pathlib import Path
+from typing import TypeVar
 
-from numpy.typing import NDArray
-
-from biomol.cif.mol import CIFMol
+from anarci import run_anarci
 
 InputType = TypeVar("InputType", str, int, float)
 FeatureType = TypeVar("FeatureType")
 NumericType = TypeVar("NumericType", int, float)
 
 
-def run_mmseqs2(
+def run_mmseqs2(  # noqa: PLR0913
     fasta_path: Path,
     tmp_dir: Path,
     mmseqs2_seq_id: float = 0.3,
     mmseqs2_cov: float = 0.8,
     mmseqs2_covmode: str = "0",
     mmseqs2_clustermode: str = "1",
-):
+) -> None:
     os.system(
-        f"mmseqs easy-cluster {fasta_path} {tmp_dir} {tmp_dir}/tmp/ --min-seq-id {mmseqs2_seq_id} -c {mmseqs2_cov} --cov-mode {mmseqs2_covmode} --cluster-mode {mmseqs2_clustermode}"
+        f"mmseqs easy-cluster {fasta_path} {tmp_dir} {tmp_dir}/tmp/ --min-seq-id {mmseqs2_seq_id} -c {mmseqs2_cov} --cov-mode {mmseqs2_covmode} --cluster-mode {mmseqs2_clustermode}",
     )
 
 

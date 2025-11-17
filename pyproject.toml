@@ -15,7 +15,7 @@ dependencies = [
     "typing_extensions>=4.15.0,<5",
     "numpy>=2.2.6,<3",
     "networkx>=3.2",
-    "biomol @ git+https://github.com/CSSB-SNU/BioMol.git",
+    "biomol @ git+https://github.com/CSSB-SNU/BioMol.git@fc1a05b",
 ]
 
 [build-system]
@@ -32,6 +32,9 @@ ignore = [
     "F722", # Incompatible with jaxtyping
     "D100", # Missing docstring in public module
     "D104", # Missing docstring in public package
+    "C901",
+    "N806",
+    "E501",
 ]
 
 [tool.ruff.lint.pydocstyle]

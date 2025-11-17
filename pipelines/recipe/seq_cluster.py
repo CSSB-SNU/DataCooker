@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from biomol.io.recipe import RecipeBook
-from postprocessing.instructions.seq_cluster_instructions import (
-    separate_sequences,
-    protein_cluster,
+from datacooker import RecipeBook
+from pipelines.instructions.seq_cluster_instructions import (
     antibody_cluster,
+    protein_cluster,
+    separate_sequences,
     write_cluster,
 )
 

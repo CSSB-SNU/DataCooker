@@ -9,7 +9,7 @@ from pipelines.utils.convert import from_bytes, to_bytes
 
 logger = logging.getLogger(__name__)
 
-def already_parsed_keys(env_path: Path) -> set[str]:
+def extract_key_list(env_path: Path) -> set[str]:
     """
     Retrieve all keys from the LMDB database.
 
@@ -71,7 +71,7 @@ def build_lmdb(  # noqa: PLR0913
 
     # remove UNL
     data_list = [data for data in data_list if data.name.split(".")[0] != "UNL"]
-    _already_parsed_keys = already_parsed_keys(env_path)
+    _already_parsed_keys = extract_key_list(env_path)
     logger.info("Already parsed %d entries. (%s)", len(_already_parsed_keys), env_path)
     data_list = [data for data in data_list if data.name.split(".")[0] not in _already_parsed_keys]
     logger.info("To be parsed %d entries.", len(data_list))

@@ -18,16 +18,16 @@ class Cooker:
     """
 
     @overload
-    def __init__(self, parse_cache: ParsingCache, recipebook: RecipeBook) -> None: ...
+    def __init__(self, parse_cache: ParsingCache, recipebook: RecipeBook, targets: list[str] | None = None) -> None: ...
     @overload
-    def __init__(self, parse_cache: ParsingCache, recipebook: str) -> None: ...
+    def __init__(self, parse_cache: ParsingCache, recipebook: str, targets: list[str] | None = None) -> None: ...
 
-    def __init__(self, parse_cache: ParsingCache, recipebook: RecipeBook | str) -> None:
+    def __init__(self, parse_cache: ParsingCache, recipebook: RecipeBook | str, targets: list[str] | None = None) -> None:
         self.parse_cache = parse_cache
         if isinstance(recipebook, str):
             self.recipebook, self.targets = self._load_recipe(recipebook)
         else:
-            self.recipebook, self.targets = recipebook
+            self.recipebook, self.targets = recipebook, targets
 
     def _load_recipe(
         self,
@@ -82,11 +82,11 @@ class Cooker:
                 matches.append((key, self.parse_cache[key]))  # noqa: PERF401
         return matches
 
-    def cook(self) -> None:  # noqa: C901
+    def cook(self) -> None:
         """Execute all recipes in dependency order."""
         visited = set()
 
-        def resolve(target_name: str, target_type: type) -> object:  # noqa: C901
+        def resolve(target_name: str, target_type: type) -> object:
             """Recursively resolve dependencies and compute the target."""
             # Already computed
             if target_name in self.parse_cache:
