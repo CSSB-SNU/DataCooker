@@ -57,56 +57,85 @@ def load_data(
     return from_bytes(value)
 
 def deep_equal(a, b, path=""):
-    """
-    Deeply compare two nested dicts/lists/tuples/arrays.
-    Returns (True, "") if equal, else (False, explanation_string)
-    """
-    # Type check
-    if type(a) != type(b):
-        return False, f"Type mismatch at {path}: {type(a)} != {type(b)}"
+    mismatches = []
 
-    # Dict 비교
-    if isinstance(a, dict):
-        a_keys = set(a.keys())
-        b_keys = set(b.keys())
-        if a_keys != b_keys:
-            return False, f"Key mismatch at {path}: {a_keys ^ b_keys}"
+    def _cmp(x, y, p):
+        # --- 0. Type mismatch ---
+        if type(x) != type(y):
+            mismatches.append((p, f"Type mismatch: {type(x)} != {type(y)}"))
+            return
 
-        for k in a_keys:
-            ok, msg = deep_equal(a[k], b[k], f"{path}.{k}")
-            if not ok:
-                return False, msg
-        return True, ""
+        # --- 1. Dict ---
+        if isinstance(x, dict):
+            a_keys = set(x.keys())
+            b_keys = set(y.keys())
 
-    # List/tuple 비교
-    elif isinstance(a, (list, tuple)):
-        if len(a) != len(b):
-            return False, f"Length mismatch at {path}: {len(a)} != {len(b)}"
+            diff = a_keys ^ b_keys
+            if diff:
+                mismatches.append((p, f"Key mismatch: {diff}"))
 
-        for i, (x, y) in enumerate(zip(a, b)):
-            ok, msg = deep_equal(x, y, f"{path}[{i}]")
-            if not ok:
-                return False, msg
-        return True, ""
+            for k in a_keys & b_keys:
+                new_p = f"{p}.{k}" if p else k
+                _cmp(x[k], y[k], new_p)
+            return
 
-    # Numpy array 비교
-    elif isinstance(a, np.ndarray):
-        if not np.array_equal(a, b):
-            return False, f"Array mismatch at {path}"
-        return True, ""
+        # --- 2. List / Tuple ---
+        if isinstance(x, (list, tuple)):
+            if len(x) != len(y):
+                mismatches.append((p, f"Length mismatch: {len(x)} != {len(y)}"))
 
-    # Primitive 값 비교
-    else:
-        if a != b:
-            return False, f"Value mismatch at {path}: {a} != {b}"
-        return True, ""
+            for i in range(min(len(x), len(y))):
+                new_p = f"{p}[{i}]"
+                _cmp(x[i], y[i], new_p)
+            return
+
+        # --- 3. NumPy array ---
+        if isinstance(x, np.ndarray):
+            if x.shape != y.shape:
+                mismatches.append((p, f"Shape mismatch: {x.shape} != {y.shape}"))
+                return
+
+            # float array → NaN-aware 비교
+            if np.issubdtype(x.dtype, np.floating):
+                equal_mask = (x == y) | (np.isnan(x) & np.isnan(y))
+            else:
+                # non-float array → 일반 비교
+                equal_mask = (x == y)
+
+            if not np.all(equal_mask):
+                idxs = np.argwhere(~equal_mask)
+                mismatches.append((p, f"Array mismatch at indices: {idxs.tolist()}"))
+            return
+
+        # --- 4. Primitive 값 (int/float/str/etc.) ---
+        # float일 때 NaN 비교 보정
+        if isinstance(x, float) and isinstance(y, float):
+            if np.isnan(x) and np.isnan(y):
+                return
+            if x != y:
+                mismatches.append((p, f"Value mismatch: {x} != {y}"))
+            return
+
+        # 기본 비교
+        if x != y:
+            mismatches.append((p, f"Value mismatch: {x} != {y}"))
+        return
+
+    _cmp(a, b, path)
+
+    ok = len(mismatches) == 0
+    return ok, mismatches
 
 if __name__ == "__main__":
-    old_DB_path = Path("/public_data/CCD/biomol_CCD.lmdb")
-    new_DB_path = Path("/public_data/CCD/biomol_CCD_test.lmdb")
+    old_DB_path = Path("/public_data/BioMolDBv2_2024Oct21/cif.lmdb")
+    new_DB_path = Path("/public_data/BioMolDBv2_2024Oct21/cif_new_shard0.lmdb")
 
     old_keys = load_keys(old_DB_path)
     new_keys = load_keys(new_DB_path)
+    new_data = load_data(new_DB_path, "109d")
+    old_data = load_data(old_DB_path, "109d")
+    is_equal, message = deep_equal(old_data, new_data)
+    breakpoint()
 
     if set(old_keys) != set(new_keys):
         print("Key sets differ.")

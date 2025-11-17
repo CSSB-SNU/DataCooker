@@ -99,10 +99,8 @@ def to_dict(data: dict) -> dict:
     """Convert all FeatureContainer and IndexTable instances to regular dictionaries."""
     result = {}
     for key, value in data.items():
-        if isinstance(value, FeatureContainer):
+        if isinstance(value, FeatureContainer | IndexTable):
             result[key] = value.to_dict()
-        elif isinstance(value, IndexTable):
-            result[key] = indextable_to_dict(value)
         elif isinstance(value, dict):
             result[key] = to_dict(value)
         else:

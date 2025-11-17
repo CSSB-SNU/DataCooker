@@ -1,14 +1,22 @@
 import glob
+import logging
+import sys
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 import click
 import lmdb
-from omegaconf import OmegaConf 
+from omegaconf import OmegaConf
 
 from pipelines.utils.lmdb import build_lmdb
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    stream=sys.stdout,
+    force=True,
+)
 OmegaConf.register_new_resolver("p", lambda x: Path(x))
 
 def dotted_to_obj(path: str) -> Any:

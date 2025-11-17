@@ -46,35 +46,13 @@ def extract_float_single(*args: str | None) -> float | None:
     pattern = re.compile(r"^-?\d+(?:\.\d+)?$")
 
     # Build mask: True if value is a valid float string
-    value = None
-    mask = []
-    for a in args:
-        if isinstance(a, list):
-            if len(a) != 1:
-                msg = "List input must have a single element"
-                raise ValueError(msg)
-            a = a[0]
-        if a is None:
-            mask.append(False)
-        elif isinstance(a, (int, float)):
-            value = float(a)
-            mask.append(True)
-        elif isinstance(a, str):
-            mask.append(bool(pattern.match(a)))
-            if pattern.match(a):
-                value = float(a)
-        else:
-            mask.append(False)
-    mask = np.array(mask)
-
-    # Check conditions
-    n_valid = np.sum(mask)
-    if n_valid == 0:
+    _list = [float(a[0]) for a in args if isinstance(a, list) and len(a) == 1 and pattern.match(a[0]) is not None]
+    if len(_list) == 0:
         return None
-    if n_valid > 1:
-        msg = "More than one input is a valid float"
-        raise ValueError(msg)
-    return value
+    # get largest float value
+    _list.sort(reverse=True)
+    return _list[0]
+
 
 
 def key_stack() -> Callable[..., type[InputType]]:

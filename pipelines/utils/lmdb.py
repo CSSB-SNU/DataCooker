@@ -55,15 +55,7 @@ def build_lmdb(  # noqa: PLR0913
 
     def _process_file(data_file: Path) -> tuple[bytes, bytes, Exception | None]:
         """Parse a single file and return (key, compressed_data, error)."""
-        key = data_file.stem
-        data_dict = parse(
-            recipe_path=recipe,
-            file_path=data_file,
-            load_func=load_func,
-            transform_func=transform_func,
-            **extra_kwargs,
-        )
-        zcompressed_data = to_bytes(data_dict)
+        key = data_file.name.split(".")[0]
         try:
             data_dict = parse(
                 recipe_path=recipe,
@@ -78,19 +70,11 @@ def build_lmdb(  # noqa: PLR0913
             return key.encode(), to_bytes({}), error
 
     # remove UNL
-    data_list = [data for data in data_list if data.stem != "UNL"]
+    data_list = [data for data in data_list if data.name.split(".")[0] != "UNL"]
     _already_parsed_keys = already_parsed_keys(env_path)
-    logger.info("Already parsed %d entries. (%s)", len(_already_parsed_keys), env_path) 
-    data_list = [data for data in data_list if data.stem not in _already_parsed_keys]
+    logger.info("Already parsed %d entries. (%s)", len(_already_parsed_keys), env_path)
+    data_list = [data for data in data_list if data.name.split(".")[0] not in _already_parsed_keys]
     logger.info("To be parsed %d entries.", len(data_list))
-
-    # test
-    for data_file in data_list[:5]:
-        key, zcompressed_data, error = _process_file(data_file)
-        if error is not None:
-            logger.error("Error processing %s: %s", key.decode(), error)
-        else:
-            logger.info("Successfully processed test file: %s", key.decode())
 
     # --- Parallel processing ---
     for i in range(0, len(data_list), chunk_size):
