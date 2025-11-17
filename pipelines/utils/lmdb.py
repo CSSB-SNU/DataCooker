@@ -9,7 +9,7 @@ from pipelines.utils.convert import from_bytes, to_bytes
 
 logger = logging.getLogger(__name__)
 
-def extract_key_list(env_path: Path) -> set[str]:
+def extract_key_list(env_path: Path) -> list[str]:
     """
     Retrieve all keys from the LMDB database.
 
@@ -27,7 +27,7 @@ def extract_key_list(env_path: Path) -> set[str]:
             key.decode() for key in txn.cursor().iternext(keys=True, values=False)
         }
     env.close()
-    return key_set
+    return list(key_set)
 
 
 def build_lmdb(  # noqa: PLR0913

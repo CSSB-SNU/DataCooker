@@ -304,3 +304,9 @@ def extract_contact_graph(
         )
 
     return _worker
+
+def extract_edge(
+    cifmol: CIFMol,
+) -> FeatureContainer:
+    """Extract contact graph from a CIFMol object."""
+    return extract_contact_graph()(cifmol)

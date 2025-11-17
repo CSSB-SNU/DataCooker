@@ -478,37 +478,47 @@ def graph_lmdb(
                 txn.put(key.encode(), zcompressed)
 
 
-@cli.command("graph_cluster")
-@click.argument("graph_lmdb_path", type=click.Path(path_type=Path))
-@click.argument("output_dir", type=click.Path(path_type=Path))
-@click.argument("unique_graph_lmdb_path", type=click.Path(path_type=Path))
-def graph_cluster(
-    graph_lmdb_path: Path,
-    output_dir: Path,
-    unique_graph_lmdb_path: Path,
+@cli.command("extract_edge")
+@click.argument("graph_db_path", type=click.Path(path_type=Path))
+@click.argument("output_path", type=click.Path(path_type=Path)) # tsv file
+def extract_edge(
+    graph_db_path: Path,
+    output_path: Path,
 ) -> None:
     """
-    Clustering graphs of CIFMol objects stored in LMDB database.
+    Extract edges from graph LMDB database.
 
     Example:
-    python -m scripts.postprocessing graph_cluster \
-        /public_data/BioMolDBv2_2024Oct21/graph.lmdb \
-        /public_data/BioMolDBv2_2024Oct21/cluster/graph_cluster/ \
-        /public_data/BioMolDBv2_2024Oct21/unique_graph.lmdb
+    python -m scripts.postprocess extract_edge \
+        ~/data/BioMolDBv2_2024Oct21/graph.lmdb \
+        ~/data/BioMolDBv2_2024Oct21/graph_edges.tsv
     """
-    key_list = extract_key_list(graph_lmdb_path)
-    from pipelines.recipe.graph_cluster import RECIPE, TARGETS
-    recipe, targets = RECIPE, TARGETS
+    key_list = extract_key_list(graph_db_path)
 
     # ---------------------------------------
     # Worker on CHUNK basis
     # ---------------------------------------
-    def _process_chunk(keys: list[str]) -> dict[str, nx.Graph]:
-        out: dict[str, nx.Graph] = {}
+    def _process_chunk(keys: list[str]) -> dict[str, bytes]:
+        edges_dict: dict[str, list[str]] = {}
         for cif_id in keys:
-            graph = load_graph(cif_id, env_path=graph_lmdb_path)
-            out[cif_id] = graph
-        return out
+            graph = load_graph(cif_id, env_path=graph_db_path)
+
+            for src_idx, dst_idx in graph.edges():
+                c1 = graph.nodes[src_idx]["label"]  # Ex: "cN0000000"
+                c2 = graph.nodes[dst_idx]["label"]  # Ex: "cL0000001"
+
+                if c1 <= c2:
+                    key = (c1, c2)
+                    id_str = f"{cif_id}_{src_idx}_{dst_idx}"
+                else:
+                    key = (c2, c1)
+                    id_str = f"{cif_id}_{dst_idx}_{src_idx}"
+
+                if key not in edges_dict:
+                    edges_dict[key] = []
+                edges_dict[key].append(id_str)
+
+        return edges_dict
 
     # make chunks
     CHUNK = 200  # tuneable
@@ -516,58 +526,24 @@ def graph_cluster(
     click.echo(f"Processing {len(key_chunks)} chunks of size {CHUNK}...")
 
     # parallel batch
-    graph_list = Parallel(n_jobs=-1, verbose=10)(
+    chunk_results = Parallel(n_jobs=-1, verbose=10)(
         delayed(_process_chunk)(chunk) for chunk in key_chunks
     )
-    graph_map = {}
-    for d in graph_list:
-        graph_map.update(d)
 
-    click.echo(f"Loaded {len(graph_map)} graphs from {graph_lmdb_path}.")
+    # merge
+    merged_edges_dict: dict[tuple[str, str], list[str]] = {}
+    for d in chunk_results:
+        for key, id_list in d.items():
+            if key not in merged_edges_dict:
+                merged_edges_dict[key] = []
+            merged_edges_dict[key].extend(id_list)
 
-    results = base_process(
-        {
-            "graph_map": graph_map,
-        },
-        recipe=recipe,
-        targets=targets,
-    )
-    graph_clusters = results["graph_clusters"]  # list of set of graph IDs
-    graph_hash_map = results["graph_hash_map"]
-    graph_dict = results["graph_dict"]
-    graph_cluster_save_path = output_dir / "graph_clusters.tsv"
-    graph_hash_map_save_path = output_dir / "graph_hash_map.tsv"
-
-    with graph_cluster_save_path.open("w") as f:
-        for _cluster_id, _graph_hash_set in enumerate(graph_clusters):
-            # 123 -> 000123
-            graph_hash_set = [f"g{int(gid):06d}" for gid in _graph_hash_set]
-            cluster_id = f"gc{_cluster_id:06d}"  # gc = graph cluster
-            f.write(f"{cluster_id}\t{','.join(graph_hash_set)}\n")
-    with graph_hash_map_save_path.open("w") as f:
-        for cif_id in graph_hash_map:
-            graph_hash = f"g{graph_hash_map[cif_id]:06d}"
-            f.write(f"{cif_id}\t{graph_hash}\n")
-
-    key_list = list(graph_dict.keys())  # graph_hash -> graph bytes
-    click.echo(
-        f"Writing {len(graph_dict)} graphs to LMDB at {unique_graph_lmdb_path}...",
-    )
-    env = lmdb.open(str(unique_graph_lmdb_path), map_size=int(1e12))  # ~1TB
-    chunk = 10_000  # write in chunks of 10000
-    for i in range(0, len(graph_dict), chunk):
-        click.echo(
-            f"Processing files {i} to {min(i + chunk, len(graph_dict))} / {len(graph_dict)}",
-        )
-        data_chunk = key_list[i : i + chunk]
-
-        # --- Write results to LMDB ---
-        with env.begin(write=True) as txn:
-            for _key in data_chunk:
-                zcompressed_data = graph_dict[_key]
-                key = f"g{int(_key):06d}"
-                txn.put(key.encode(), zcompressed_data)
-
+    # write to output_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as f:
+        for (c1, c2), id_list in merged_edges_dict.items():
+            ids = ",".join(id_list)
+            f.write(f"{c1}\t{c2}\t{ids}\n")
 
 if __name__ == "__main__":
     cli()

@@ -9,7 +9,7 @@ class CIFAtomView(
     """View class for CIF atoms."""
 
     @property
-    def name(self) -> NodeFeature:
+    def id(self) -> NodeFeature:
         """Atom IDs. Example: 'N', 'CA', 'C', 'O', etc."""
 
     @property

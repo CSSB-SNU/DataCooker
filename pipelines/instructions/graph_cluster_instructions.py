@@ -37,12 +37,12 @@ def extract_graph_per_cifmol() -> Callable[..., bytes]:
             if entity_type == "non-polymer":
                 seq = cifmol.chains[
                     cifmol.chains.chain_id == full_chain_id
-                ].residues.chem_comp.value
+                ].residues.chem_comp_id.value
                 seq = f"({seq[0]})"
             elif entity_type == "branched":
                 seq_list = cifmol.chains[
                     cifmol.chains.chain_id == full_chain_id
-                ].residues.chem_comp.value
+                ].residues.chem_comp_id.value
                 bonds = cifmol.chains[
                     cifmol.chains.chain_id == full_chain_id
                 ].residues.bond
@@ -116,12 +116,12 @@ def extract_graphs(n_jobs: int = -1) -> Callable[..., type[InputType]]:
             if entity_type == "non-polymer":
                 seq = cifmol.chains[
                     cifmol.chains.chain_id == full_chain_id
-                ].residues.chem_comp.value
+                ].residues.chem_comp_id.value
                 seq = f"({seq[0]})"
             elif entity_type == "branched":
                 seq_list = cifmol.chains[
                     cifmol.chains.chain_id == full_chain_id
-                ].residues.chem_comp.value
+                ].residues.chem_comp_id.value
                 bonds = cifmol.chains[
                     cifmol.chains.chain_id == full_chain_id
                 ].residues.bond

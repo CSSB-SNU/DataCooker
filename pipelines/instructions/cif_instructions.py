@@ -200,7 +200,7 @@ def parse_chem_comp() -> Callable[..., dict[str, FeatureContainer]]:
         atom_stereo = NodeFeature(value=atom_stereo)
 
         atom_features = {
-            "name": atom_id,
+            "id": atom_id,
             "element": element,
             "aromatic": atom_aromatic,
             "stereo": atom_stereo,
@@ -285,7 +285,7 @@ def parse_chem_comp() -> Callable[..., dict[str, FeatureContainer]]:
 
         residue_container = FeatureContainer(
             features={
-                "name": name,
+                "id": name,
                 "formula": formula,
             },
         )
@@ -458,7 +458,7 @@ def parse_scheme_dict() -> Callable[..., dict[str, dict[str, NDArray]] | None]:
             "entity_id": entity_id,
             "cif_idx": cif_idx.astype(str),
             "auth_idx": auth_idx.astype(str),
-            "chem_comp": chem_comp,
+            "chem_comp_id": chem_comp,
             "hetero": hetero.astype(bool),
         }
 
@@ -603,7 +603,7 @@ def parse_entity_dict() -> Callable[..., dict[str, dict[str, NDArray]] | None]:
 
         return {
             "seq_num": seq_num_list.astype(int),
-            "chem_comp": chem_comp_list,
+            "chem_comp_id": chem_comp_list,
             "hetero": hetero_list.astype(bool),
             "one_letter_code_can": one_letter_code_can,
             "one_letter_code": one_letter_code,
@@ -711,8 +711,8 @@ def attach_entity() -> Callable[..., dict[str, dict[str, NDArray]] | None]:
                 msg = "Hetero values in scheme not consistent with entity."
                 raise ValueError(msg)
 
-            entity_chem_comp = entity_info["chem_comp"]
-            scheme_chem_comp = asym_info["chem_comp"]
+            entity_chem_comp = entity_info["chem_comp_id"]
+            scheme_chem_comp = asym_info["chem_comp_id"]
 
             if not np.all(np.isin(scheme_chem_comp, entity_chem_comp)):
                 msg = "Chem_comp values in scheme not consistent with entity."
@@ -804,7 +804,7 @@ def rearrange_atom_site_dict() -> Callable[..., dict | None]:
         rearranged_dict["occupancy"] = atom_site_dict["occupancy"].astype(float)
         rearranged_dict["element"] = atom_site_dict["type_symbol"].astype(str)
         rearranged_dict["atom"] = atom_site_dict["label_atom_id"].astype(str)
-        rearranged_dict["chem_comp"] = atom_site_dict["label_comp_id"].astype(str)
+        rearranged_dict["chem_comp_id"] = atom_site_dict["label_comp_id"].astype(str)
 
         rearranged_dict["alt_id"] = atom_site_dict["label_alt_id"].astype(str)
         rearranged_dict["model_id"] = atom_site_dict["pdbx_PDB_model_num"].astype(str)
@@ -870,7 +870,7 @@ def build_full_length_asym_dict() -> Callable[..., dict | None]:
         atom_site_dict: dict[str, dict[str, NDArray]] | None,
         chem_comp_dict: dict[str, dict[str, NDArray]] | None,
     ) -> dict[str, dict[str, NDArray]] | None:
-        full_chem_comp_list = asym_dict["chem_comp"]
+        full_chem_comp_list = asym_dict["chem_comp_id"]
         auth_idx_list = asym_dict["auth_idx"]
         cif_idx_list = asym_dict["cif_idx"]
         auth_idx_to_chem_comp = {
@@ -880,7 +880,7 @@ def build_full_length_asym_dict() -> Callable[..., dict | None]:
 
         atom_auth_idx = atom_site_dict["auth_idx"]
         atom_atom = atom_site_dict["atom"]
-        atom_chem_comp = atom_site_dict["chem_comp"]
+        atom_chem_comp = atom_site_dict["chem_comp_id"]
         xyz, b_factor, occupancy = (
             atom_site_dict["xyz"],
             atom_site_dict["b_factor"],
@@ -913,7 +913,7 @@ def build_full_length_asym_dict() -> Callable[..., dict | None]:
                     msg = f"Chem_comp {atom_cc} not in entity definition {_chem_comp_list} for residue {auth_idx}."
                     raise ValueError(msg)
             chem_comp_list.append(chem_comp)
-            atom_num = len(chem_comp_dict[chem_comp]["atom"]["atom_id"])
+            atom_num = len(chem_comp_dict[chem_comp]["atom"]["id"])
             atom_to_residue_idx.extend([residue_count] * atom_num)
             auth_idx_to_atom_idx[auth_idx] = atom_count
 
@@ -945,12 +945,12 @@ def build_full_length_asym_dict() -> Callable[..., dict | None]:
         full_occupancy = np.full(full_atom_num, np.nan, dtype=float)
         for ii in range(len(atom_atom)):
             chem_comp = chem_comp_dict[atom_chem_comp[ii]]
-            chem_comp_atom_id = chem_comp["atom"]["atom_id"]
+            chem_comp_atom_id = chem_comp["atom"]["id"]
             atom_id = atom_atom[ii]
             auth_idx = atom_auth_idx[ii]
             if auth_idx not in auth_idx_to_atom_idx:
                 # For H2O, it happens that auth_idx is not matched.
-                if chem_comp["residue"]["name"].value[0] != "WATER":
+                if chem_comp["residue"]["id"].value[0] != "WATER":
                     msg = f"Auth_idx {auth_idx} not found in scheme for atom {atom_id} in residue {atom_chem_comp[ii]}."
                     raise ValueError(msg)
                 continue
@@ -977,14 +977,14 @@ def build_full_length_asym_dict() -> Callable[..., dict | None]:
             },
         )
 
-        def find_atom_index(residue_idx, atom_name):
+        def find_atom_index(residue_idx, atom_id):
             chem_comp = chem_comp_list[residue_idx]
-            chem_comp_atom_id = chem_comp["atom"]["atom_id"]
-            if atom_name not in chem_comp_atom_id:
+            chem_comp_atom_id = chem_comp["atom"]["id"]
+            if atom_id not in chem_comp_atom_id:
                 return None
             return (
                 auth_idx_to_atom_idx[auth_idx_list[residue_idx]]
-                + np.where(chem_comp_atom_id == atom_name)[0][0]
+                + np.where(chem_comp_atom_id == atom_id)[0][0]
             )
 
         # add branch edge + canonical bonds
@@ -1136,7 +1136,7 @@ def build_full_length_asym_dict() -> Callable[..., dict | None]:
             {
                 "cif_idx": NodeFeature(value=asym_dict["cif_idx"]).copy(),
                 "auth_idx": NodeFeature(value=asym_dict["auth_idx"]).copy(),
-                "chem_comp": NodeFeature(value=chem_comp_id_list).copy(),
+                "chem_comp_id": NodeFeature(value=chem_comp_id_list).copy(),
                 "hetero": NodeFeature(value=asym_dict["hetero"].astype(int)).copy(),
                 "one_letter_code_can": NodeFeature(
                     value=asym_dict["one_letter_code_can"],
@@ -1522,7 +1522,7 @@ def build_assembly_dict() -> Callable[..., dict[str, dict[str, NDArray]] | None]
                     oper_to_chains[assembly].append(chain)
 
                 auth_idx_in_container = residue_container["auth_idx"]
-                atom_id_in_container = atom_container["atom_id"]
+                atom_id_in_container = atom_container["id"]
 
                 residue_src = []
                 residue_dst = []

@@ -73,4 +73,4 @@ def cli(
 
 if __name__ == "__main__":
     cli()
-    # python scripts/parse_cif.py /public_data/CCD/biomol_CCD.lmdb/ /public_data/BioMolDB_2024Oct21/cif/cif_raw/if/8if3.cif.gz  # noqa: E501
+    # python scripts/parse_cif.py /home/psk6950/data/CCD/biomol_CCD.lmdb/ /home/psk6950/data/cif_raw/ko/1ko0.cif.gz  # noqa: E501
