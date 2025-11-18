@@ -1,4 +1,4 @@
-cif_dir: ${p:/home/psk6950/data/cif_raw}
+data_dir: ${p:/home/psk6950/data/cif_raw}
 file_pattern: "*.cif*"
 
 env_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/cif_new2.lmdb}

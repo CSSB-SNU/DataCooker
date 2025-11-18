@@ -1,4 +1,4 @@
-cif_dir: ${p:/home/psk6950/data/CCD/components_tmp/}
+data_dir: ${p:/home/psk6950/data/CCD/components_tmp/}
 file_pattern: "*.cif*"
 
 env_path: ${p:/home/psk6950/data/CCD/biomol_CCD.lmdb}

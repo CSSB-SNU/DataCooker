@@ -1,154 +1,90 @@
 from pathlib import Path
 
-import lmdb
-import numpy as np
-from pipelines.utils.convert import from_bytes
-
-def load_keys(
-    env_path: Path,
-) -> list[str]:
+def read_tsv_file(tsv_path: Path) -> dict[str, list[str]]:
     """
-    Load all keys from LMDB database.
+    Read a TSV (Tab-Separated Values) file and return its contents as a list of dictionaries.
 
     Args:
-        env_path: Path to the LMDB environment.
+        tsv_path: Path to the TSV file.
+
     Returns
     -------
-        list[str]
-            List of all keys in the LMDB database.
+        list[dict[str, str]]
+            List of rows represented as dictionaries with column headers as keys.
     """
-    env = lmdb.open(str(env_path), readonly=True, lock=False)
-    with env.begin() as txn:
-        cursor = txn.cursor()
-        keys = [key.decode() for key in cursor.iternext(keys=True, values=False)]
-    env.close()
-    return keys
+    data: dict[str, list[str]] = {}
+    with tsv_path.open("r", encoding="utf-8") as file:
+        lines = file.readlines()
+        for line in lines:
+            key1, key2, value = line.strip().split("\t")
+            key = f"{key1}_{key2}"
+            data[key] = value.split(",")
+    return data
 
-def load_data(
-    env_path: Path,
-    key: str|None = None, # if None, load first key
-) -> dict:
+def cal_degree_of_node(data: dict[str, list[str]]) -> dict[str, int]:
     """
-    Load data from LMDB database.
+    Calculate the degree of each node in the graph represented by the edge list.
 
     Args:
-        env_path: Path to the LMDB environment.
-        key: Key to load. If None, load the first key.
-    Returns.
+        data: Dictionary where keys are node identifiers and values are lists of connected nodes.
+
+    Returns
     -------
-        dict
-            The loaded data dictionary.
+        dict[str, int]
+            Dictionary mapping each node to its degree.
     """
-    env = lmdb.open(str(env_path), readonly=True, lock=False)
-    with env.begin() as txn:
-        if key is None:
-            cursor = txn.cursor()
-            if cursor.first():              # Move to first key-value pair
-                key, value = cursor.item()
-            else:
-                msg = "LMDB is empty."
-                raise KeyError(msg)
-        else:
-            value = txn.get(key.encode())
-    env.close()
-    if value is None:
-        msg = f"Key '{key}' not found in LMDB database."
-        raise KeyError(msg)
-    return from_bytes(value)
+    degree_dict: dict[str, int] = {}
+    for key, values in data.items():
+        key1, key2 = key.split("_")
+        if key1 not in degree_dict:
+            degree_dict[key1] = 0
+        if key2 not in degree_dict:
+            degree_dict[key2] = 0
+        degree_dict[key1] += len(values)
+        degree_dict[key2] += len(values)
+    return degree_dict
 
-def deep_equal(a, b, path=""):
-    mismatches = []
+def remove_ligand_ligand_edges(data: dict[str, list[str]]) -> dict[str, list[str]]:
+    """
+    Remove edges that connect two ligand nodes.
 
-    def _cmp(x, y, p):
-        # --- 0. Type mismatch ---
-        if type(x) != type(y):
-            mismatches.append((p, f"Type mismatch: {type(x)} != {type(y)}"))
-            return
+    Args:
+        data: Dictionary where keys are node identifiers and values are lists of connected nodes.
 
-        # --- 1. Dict ---
-        if isinstance(x, dict):
-            a_keys = set(x.keys())
-            b_keys = set(y.keys())
+    Returns
+    -------
+        dict[str, list[str]]
+            Filtered dictionary with ligand-ligand edges removed.
+    """
+    filtered_data: dict[str, list[str]] = {}
+    for key, values in data.items():
+        key1, key2 = key.split("_")
+        if key1.startswith("cL") and key2.startswith("cL"):
+            continue
+        filtered_data[key] = values
+    return filtered_data
 
-            diff = a_keys ^ b_keys
-            if diff:
-                mismatches.append((p, f"Key mismatch: {diff}"))
-
-            for k in a_keys & b_keys:
-                new_p = f"{p}.{k}" if p else k
-                _cmp(x[k], y[k], new_p)
-            return
-
-        # --- 2. List / Tuple ---
-        if isinstance(x, (list, tuple)):
-            if len(x) != len(y):
-                mismatches.append((p, f"Length mismatch: {len(x)} != {len(y)}"))
-
-            for i in range(min(len(x), len(y))):
-                new_p = f"{p}[{i}]"
-                _cmp(x[i], y[i], new_p)
-            return
-
-        # --- 3. NumPy array ---
-        if isinstance(x, np.ndarray):
-            if x.shape != y.shape:
-                mismatches.append((p, f"Shape mismatch: {x.shape} != {y.shape}"))
-                return
-
-            # float array → NaN-aware 비교
-            if np.issubdtype(x.dtype, np.floating):
-                equal_mask = (x == y) | (np.isnan(x) & np.isnan(y))
-            else:
-                # non-float array → 일반 비교
-                equal_mask = (x == y)
-
-            if not np.all(equal_mask):
-                idxs = np.argwhere(~equal_mask)
-                mismatches.append((p, f"Array mismatch at indices: {idxs.tolist()}"))
-            return
-
-        # --- 4. Primitive 값 (int/float/str/etc.) ---
-        # float일 때 NaN 비교 보정
-        if isinstance(x, float) and isinstance(y, float):
-            if np.isnan(x) and np.isnan(y):
-                return
-            if x != y:
-                mismatches.append((p, f"Value mismatch: {x} != {y}"))
-            return
-
-        # 기본 비교
-        if x != y:
-            mismatches.append((p, f"Value mismatch: {x} != {y}"))
-        return
-
-    _cmp(a, b, path)
-
-    ok = len(mismatches) == 0
-    return ok, mismatches
+def find_edges_that_include(data, key):
+    all_edges = list(data.keys())
+    included_edges = [edge for edge in all_edges if key in edge.split("_")]
+    return included_edges
 
 if __name__ == "__main__":
-    old_DB_path = Path("/public_data/BioMolDBv2_2024Oct21/cif.lmdb")
-    new_DB_path = Path("/public_data/BioMolDBv2_2024Oct21/cif_new_shard0.lmdb")
+    tsv_path = Path("/home/psk6950/data/BioMolDBv2_2024Oct21/metadata/graph_edges.tsv")
+    data = read_tsv_file(tsv_path)
+    data = remove_ligand_ligand_edges(data)
+    degree_dict = cal_degree_of_node(data)
 
-    old_keys = load_keys(old_DB_path)
-    new_keys = load_keys(new_DB_path)
-    new_data = load_data(new_DB_path, "109d")
-    old_data = load_data(old_DB_path, "109d")
-    is_equal, message = deep_equal(old_data, new_data)
-    breakpoint()
+    # sort by degree
+    nodes = list(degree_dict.keys())
+    degrees = [degree_dict[node] for node in nodes]
+    sorted_indices = sorted(range(len(degrees)), key=lambda i: degrees[i], reverse=True)
+    sorted_nodes = [nodes[i] for i in sorted_indices]
+    sorted_degrees = [degrees[i] for i in sorted_indices]
 
-    if set(old_keys) != set(new_keys):
-        print("Key sets differ.")
-        print("Only in old DB:", set(old_keys) - set(new_keys))
-        print("Only in new DB:", set(new_keys) - set(old_keys))
-        exit(1)
+    sorted_ligands_indices = [i for i, node in enumerate(sorted_nodes) if node.startswith("cL")]
+    top50_ligands = [sorted_nodes[i] for i in sorted_ligands_indices[:50]]
+    top50_ligand_degrees = [sorted_degrees[i] for i in sorted_ligands_indices[:50]]
 
-    for key in old_keys:
-        old_data = load_data(old_DB_path, key)
-        new_data = load_data(new_DB_path, key)
-        is_equal, message = deep_equal(old_data, new_data)
-        if not is_equal:
-            print(f"Data mismatch for key '{key}': {message}")
-            breakpoint()
-            exit(1)
+    test = find_edges_that_include(data, "cL0021727")
     breakpoint()

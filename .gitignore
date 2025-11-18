@@ -2,3 +2,4 @@ submits/
 logs/
 .vscode/
 test*
+*.cif

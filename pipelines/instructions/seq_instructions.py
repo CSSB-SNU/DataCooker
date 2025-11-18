@@ -202,6 +202,53 @@ def graph_to_canonical_sequence(  # noqa: PLR0912, PLR0915
 
     return f"{nodes_str}|{edges_str}"
 
+def extract_sequence_from_cifmol(
+    cifmol: CIFMol,
+) -> dict[str, str]:
+    """
+    Extract sequences from CIFMol and return as a dictionary.
+
+    Headers:
+    >(PDB_ID)_(Chain_ID) | (Molecule_Type) | (if polymer, Polymer_Type)
+    Sequence:
+        - If polymer, use one-letter codes (canonical).
+        - If non-polymer, use three-letter codes separated by spaces. Ex) (SO4)
+        - If branched, use three-letter codes with edge information. (NAG)(NAG)  | (0, 1, 2)
+    Skip residues with unknown types or water.
+    """
+    seq_dict = {}
+    chain_ids = cifmol.chains.chain_id.value
+    for chain_id in chain_ids:
+        entity_type = cifmol.chains[
+            cifmol.chains.chain_id == chain_id
+        ].entity_type.value[0]
+        if entity_type == "non-polymer":
+            seq = cifmol.chains[
+                cifmol.chains.chain_id == chain_id
+            ].residues.chem_comp_id.value
+            seq = f"({seq[0]})"
+        elif entity_type == "branched":
+            seq_list = cifmol.chains[
+                cifmol.chains.chain_id == chain_id
+            ].residues.chem_comp_id.value
+            bonds = cifmol.chains[
+                cifmol.chains.chain_id == chain_id
+            ].residues.bond
+            seq = graph_to_canonical_sequence(
+                seq_list,
+                bonds.src_indices,
+                bonds.dst_indices,
+            )
+        else:  # polymer
+            seq = cifmol.chains[
+                cifmol.chains.chain_id == chain_id
+            ].residues.one_letter_code_can.value
+            seq = "".join(seq)
+
+        seq_dict[chain_id] = seq
+
+    return seq_dict
+
 
 def build_fasta() -> Callable[..., type[InputType]]:
     """
@@ -221,6 +268,7 @@ def build_fasta() -> Callable[..., type[InputType]]:
     ) -> dict[str, str]:
         fasta_dict = {}
         chain_ids = cifmol.chains.chain_id.value
+        seq_dict = extract_sequence_from_cifmol(cifmol)
         for full_chain_id in chain_ids:
             chain_id = full_chain_id.split("_")[0]
             if chain_id in fasta_dict:
@@ -229,28 +277,7 @@ def build_fasta() -> Callable[..., type[InputType]]:
                 cifmol.chains.chain_id == full_chain_id
             ].entity_type.value[0]
             header = f">{cifmol.id[0]}_{chain_id} | {entity_type}"
-            if entity_type == "non-polymer":
-                seq = cifmol.chains[
-                    cifmol.chains.chain_id == full_chain_id
-                ].residues.chem_comp.value
-                seq = f"({seq[0]})"
-            elif entity_type == "branched":
-                seq_list = cifmol.chains[
-                    cifmol.chains.chain_id == full_chain_id
-                ].residues.chem_comp.value
-                bonds = cifmol.chains[
-                    cifmol.chains.chain_id == full_chain_id
-                ].residues.bond
-                seq = graph_to_canonical_sequence(
-                    seq_list,
-                    bonds.src_indices,
-                    bonds.dst_indices,
-                )
-            else:  # polymer
-                seq = cifmol.chains[
-                    cifmol.chains.chain_id == full_chain_id
-                ].residues.one_letter_code_can.value
-                seq = "".join(seq)
+            seq = seq_dict[full_chain_id]
 
             fasta_dict[chain_id] = f"{header}\n{seq}\n"
 

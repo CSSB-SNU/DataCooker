@@ -172,6 +172,13 @@ class TransformFunc(Protocol):
         """Transform a key string into a list of keys."""
         ...
 
+class ConvertFunc(Protocol):
+    """Protocol for data conversion functions."""
+
+    def __call__(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Convert input data dict into another data dict."""
+        ...
+
 def parse(
     recipe_path: Path,
     file_path: Path,
@@ -182,6 +189,21 @@ def parse(
 ) -> dict:
     """Parse a CIF file using a predefined recipe."""
     datadict = load_func(file_path)
+    datadict.update(extra_kwargs)
+    parse_cache = ParsingCache(transform_func)
+    cooker = Cooker(parse_cache=parse_cache, recipebook=str(recipe_path))
+    cooker.prep(datadict, fields=list(datadict.keys()))
+    cooker.cook()
+    return cooker.serve(targets=targets)
+
+def rebuild(
+    recipe_path: Path,
+    datadict: dict[str, Any],
+    transform_func: TransformFunc | None = None,
+    targets: list[str] | None = None,
+    **extra_kwargs: Mapping[str, Any],
+) -> dict:
+    """Parse a CIF file using a predefined recipe."""
     datadict.update(extra_kwargs)
     parse_cache = ParsingCache(transform_func)
     cooker = Cooker(parse_cache=parse_cache, recipebook=str(recipe_path))

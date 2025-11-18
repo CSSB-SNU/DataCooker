@@ -2,10 +2,10 @@ from pathlib import Path
 
 import numpy as np
 
-from pipelines.cifmol import CIFMol
+from pipelines.cifmol import CIFMol, CIFMolAttached
 
 
-def to_cif(cifmol: CIFMol, output_path: Path) -> None:  # noqa: PLR0915
+def to_cif(cifmol: CIFMol|CIFMolAttached, output_path: Path) -> None:  # noqa: PLR0915
     """
     Write a CIFMol object to a CIF file.
 
@@ -60,6 +60,7 @@ def to_cif(cifmol: CIFMol, output_path: Path) -> None:  # noqa: PLR0915
     group_PDB_list = cifmol.residues.hetero[atom_to_res][mask].value  # noqa: N806
     id_list = 1 + np.arange(length)
     type_symbol_list = cifmol.atoms.element[mask].value
+    # label_atom_id_list = cifmol.atoms.id[mask].value
     label_atom_id_list = cifmol.atoms.id[mask].value
     label_alt_id_list = [cifmol.alt_id] * length
     label_comp_id_list = cifmol.residues.chem_comp_id[atom_to_res][mask].value

@@ -9,7 +9,7 @@ import click
 import lmdb
 from omegaconf import OmegaConf
 
-from pipelines.utils.lmdb import build_lmdb
+from pipelines.utils.lmdb import build_lmdb, extract_key_list, rebuild_lmdb
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +39,8 @@ def load_config(config_path: Path) -> dict[str, Any]:
         config["load_func"] = dotted_to_obj(config["load_func"])
     if "transform_func" in config and isinstance(config["transform_func"], str):
         config["transform_func"] = dotted_to_obj(config["transform_func"])
+    if "convert_func" in config and isinstance(config["convert_func"], str):
+        config["convert_func"] = dotted_to_obj(config["convert_func"])
 
     return config
 
@@ -83,7 +85,7 @@ def build(
     """
     map_size = int(map_size)
     config = load_config(config)
-    data_list = load_data_list(config["cif_dir"], pattern=config["file_pattern"])
+    data_list = load_data_list(config["data_dir"], pattern=config["file_pattern"])
 
     if shard_idx is not None:
         if shard_idx < 0 or shard_idx >= n_shards:
@@ -167,6 +169,32 @@ def merge(shard_pattern: str, output: Path, map_size: float, overwrite: bool) ->
 
     click.echo(f"[Done] Merged {len(shard_paths)} shards into {output}")
     click.echo(f"Total keys merged: {total_keys}")
+
+@cli.command("rebuild")
+@click.argument("config", type=click.Path(exists=True, path_type=Path))
+@click.option("--map-size", "-m", type=float, default=1e10, show_default=True)
+def rebuild(
+    config: Path,
+    map_size: float,
+) -> None:
+    """
+    Rebuild an LMDB database from an existing LMDB database with transformations.
+
+    Example:
+        python build_lmdb.py rebuild --config configs/AF3_training.yaml
+    """
+    map_size = int(map_size)
+    config = load_config(config)
+
+    rebuild_lmdb(
+        **config,
+        map_size=map_size,
+    )
+
+    # check the key count
+    key_list = extract_key_list(config["new_env_path"])
+    key_count = len(key_list)
+    click.echo(f"[Done] Built LMDB at {config['new_env_path']} with {key_count} keys.")
 
 
 # ==============================================================

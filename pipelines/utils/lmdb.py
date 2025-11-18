@@ -4,7 +4,7 @@ from pathlib import Path
 import lmdb
 from joblib import Parallel, delayed
 
-from datacooker import LoadFunc, TransformFunc, parse
+from datacooker import ConvertFunc, LoadFunc, TransformFunc, parse, rebuild
 from pipelines.utils.convert import from_bytes, to_bytes
 
 logger = logging.getLogger(__name__)
@@ -100,6 +100,94 @@ def build_lmdb(  # noqa: PLR0913
     env.close()
 
 
+def rebuild_lmdb(  # noqa: PLR0913
+    old_env_path: Path,
+    new_env_path: Path,
+    recipe: Path,
+    metadata_recipe: Path | None = None,
+    metadata_input: dict[str, Path] | None = None,
+    convert_func: ConvertFunc| None = None,
+    transform_func: TransformFunc | None = None,
+    chunk_size: int = 10_000,
+    n_jobs: int = -1,
+    map_size: int = 1e12,  # ~1TB
+    **extra_kwargs: object, # including metadata path
+) -> None:
+    """
+    Build an LMDB database from parsed data.
+
+    Args:
+        env_path: Path to the LMDB environment.
+        data_list: List of paths to data files to parse.
+        parser: Function to parse individual data files.
+        n_jobs: Number of parallel jobs for parsing.
+        map_size: Maximum size of the LMDB database in bytes.
+    """
+    new_env = lmdb.open(str(new_env_path), map_size=int(map_size))
+
+    if metadata_recipe is not None:
+        metadata_dict = rebuild(
+            recipe_path=metadata_recipe,
+            datadict=metadata_input,
+            **extra_kwargs,
+        )
+
+    def _process_file(key: str) -> tuple[bytes, bytes, Exception | None]:
+        """Parse a single file and return (key, compressed_data, error)."""
+        data = read_lmdb(old_env_path, key)
+        data = convert_func(data) if convert_func is not None else data
+        output_dict = {}
+        try:
+            for id, inner_dict in data.items():
+                datadict:dict = inner_dict.copy()
+                if metadata_recipe is not None:
+                    datadict.update(metadata_dict)
+                rebuild_data_dict = rebuild(
+                    recipe_path=recipe,
+                    datadict=datadict,
+                    transform_func=transform_func,
+                    **extra_kwargs,
+                )
+                output_dict[id] = rebuild_data_dict
+            zcompressed_data = to_bytes(output_dict)
+            return key.encode(), zcompressed_data, None
+        except Exception as error:  # noqa: BLE001
+            return key.encode(), to_bytes({}), error
+
+    # remove UNL
+    old_key_list = extract_key_list(old_env_path)
+    _already_parsed_keys = extract_key_list(new_env_path)
+    _already_parsed_keys = set(_already_parsed_keys)
+    logger.info("Already parsed %d entries. (%s)", len(_already_parsed_keys), new_env_path)
+    old_set = set(old_key_list)
+    key_list = list(old_set - _already_parsed_keys)
+    logger.info("To be parsed %d entries.", len(key_list))
+
+    # --- Parallel processing ---
+    for i in range(0, len(key_list), chunk_size):
+        logger.info(
+            "Processing files %d to %d / %d",
+            i,
+            min(i + chunk_size, len(key_list)),
+            len(key_list),
+        )
+        key_chunk = key_list[i : i + chunk_size]
+        results = Parallel(n_jobs=n_jobs, verbose=10, prefer="processes")(
+            delayed(_process_file)(key) for key in key_chunk
+        )
+        # --- Write results to LMDB ---
+        with new_env.begin(write=True) as txn:
+            for key, zcompressed_data, error in results:
+                if error is not None:
+                    # Log error message but continue
+                    logger.error("Error processing %s: %s", key.decode(), error)
+                    continue
+                txn.put(key, zcompressed_data)
+
+    new_env.close()
+
+
+
 def merge_lmdb_shards(
     shard_paths: list[Path],
     merged_env_path: Path,
@@ -144,7 +232,7 @@ def merge_lmdb_shards(
     logger.info("Total keys merged: %d", total_keys)
 
 
-def read_lmdb(env_path: Path, key: str) -> bytes:
+def read_lmdb(env_path: Path, key: str) -> dict:
     """
     Read a value from the LMDB database by key.
 
