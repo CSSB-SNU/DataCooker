@@ -666,5 +666,50 @@ def extract_edge(
             ids = ",".join(id_list)
             f.write(f"{c1}\t{c2}\t{ids}\n")
 
+
+@cli.command("train_valid_split")
+@click.argument("edge_tsv_path", type=click.Path(path_type=Path))
+@click.argument("output_dir", type=click.Path(path_type=Path))
+@click.option("--train_ratio", type=float, default=0.9, show_default=True)
+def train_valid_split(
+    edge_tsv_path: Path,
+    output_dir: Path,
+    train_ratio: float,
+) -> None:
+    from pipelines.recipe.train_valid_graph_split import RECIPE, TARGETS
+    recipe, targets = RECIPE, TARGETS
+
+    # ignore water, SO4, glycerol, 1,2-ETHANEDIOL
+    ignore_nodes = [
+        "cL0000002", # HOH
+        "cL0000007", # SO4
+        "cL0001501", # ED0
+        "cL0001502", # EDO
+    ]
+
+    result = base_process(
+        data_dict={
+            "edge_tsv_path": edge_tsv_path,
+            "ignore_nodes": ignore_nodes,
+            "train_ratio": train_ratio,
+        },
+        recipe=recipe,
+        targets=targets,
+    )
+
+    train_edge_list, valid_edge_list = result["train_edge_list"], result["valid_edge_list"]
+
+    # write to files
+    train_output_path = output_dir / "train_edges.tsv"
+    valid_output_path = output_dir / "valid_edges.tsv"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with train_output_path.open("w") as f:
+        for line in train_edge_list:
+            f.write(f"{line}\n")
+    with valid_output_path.open("w") as f:
+        for line in valid_edge_list:
+            f.write(f"{line}\n")
+
+
 if __name__ == "__main__":
     cli()

@@ -519,3 +519,110 @@ def convert_graph_to_bytes(n_jobs: int = -1) -> Callable[..., bytes]:
         return dict(zip(graph_map.keys(), results, strict=True))
 
     return _worker
+
+
+def build_whole_graph(edge_tsv_path: Path, ignore_nodes:list|None=None) -> tuple[nx.Graph, nx.Graph]:
+    """Build a whole graph from edge TSV file."""
+    edges = []
+    polymer_edges = []
+    with edge_tsv_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            src, dst = line.strip().split("\t")[:2]
+            if ignore_nodes and (src in ignore_nodes or dst in ignore_nodes):
+                continue
+            # test
+            if src[1] != "L" and dst[1] != "L":
+                polymer_edges.append((src, dst))
+            edges.append((src, dst))
+    whole, polymer = nx.Graph(), nx.Graph()
+    whole.add_edges_from(edges)
+    polymer.add_edges_from(polymer_edges)
+    return whole, polymer
+
+def split_graph_by_components(
+    whole_graph: nx.Graph,
+) -> tuple[list[nx.Graph], int]:
+    """Split a whole graph into connected components."""
+    total_edges = whole_graph.number_of_edges()
+    components = list(nx.connected_components(whole_graph))
+    subgraphs = []
+    for comp in components:
+        subgraph = whole_graph.subgraph(comp).copy()
+        subgraphs.append(subgraph)
+    # sort by size descending
+    subgraphs.sort(key=lambda g: g.number_of_nodes(), reverse=True)
+
+    return subgraphs, total_edges
+
+def split_train_valid(
+    whole_graph: nx.Graph,
+    total_edges: int,
+    subgraphs: list[nx.Graph],
+    train_ratio: float = 0.9,  # fraction of train set
+) -> tuple[list[nx.Graph], list[nx.Graph]]:
+    """
+    Split subgraphs into train and valid sets.
+
+    Train:
+        - Always includes the largest component
+        - Then adds smallest components (by #edges) one by one
+          until total #edges in train <= total_edges * train_ratio
+
+    Valid:
+        - All remaining components
+    """
+    if not subgraphs:
+        return [], []
+
+    target_train_edges = int(total_edges * train_ratio)
+
+    train_indices: set[int] = {0}
+    train_edge_count = subgraphs[0].number_of_edges()
+
+    remaining_indices = list(range(1, len(subgraphs)))
+    remaining_indices.sort(key=lambda i: subgraphs[i].number_of_edges())
+
+    for idx in remaining_indices:
+        comp_edges = subgraphs[idx].number_of_edges()
+
+        if train_edge_count + comp_edges <= target_train_edges:
+            train_indices.add(idx)
+            train_edge_count += comp_edges
+        else:
+            break
+
+    train_subgraphs = [subgraphs[i] for i in sorted(train_indices)]
+    valid_subgraphs = [subgraphs[i] for i in range(len(subgraphs)) if i not in train_indices]
+
+    train_nodes: set = set().union(*(g.nodes for g in train_subgraphs))
+    valid_nodes: set = set().union(*(g.nodes for g in valid_subgraphs))
+
+    # get train & valid edges from whole graph (at least one node in train/valid)
+    train_edges = []
+    valid_edges = []
+    for u, v in whole_graph.edges():
+        if u in train_nodes or v in train_nodes:
+            train_edges.append((u, v))
+        if u in valid_nodes or v in valid_nodes:
+            valid_edges.append((u, v))
+        if u in train_nodes and v in valid_nodes:
+            msg = f"Edge ({u}, {v}) connects train and valid nodes!"
+            raise ValueError(msg)
+        if v in train_nodes and u in valid_nodes:
+            msg = f"Edge ({u}, {v}) connects train and valid nodes!"
+            raise ValueError(msg)
+    train_edges = list(set(train_edges))
+    valid_edges = list(set(valid_edges))
+
+    return train_edges, valid_edges
+
+def extract_edges(edge_tsv_path: Path, to_be_extracted: list[tuple[str, str]]) -> list[str]:
+    """Extract edges from edge TSV file."""
+    extracted_edges = []
+    to_be_extracted = set(to_be_extracted)
+    with edge_tsv_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            src, dst = line.strip().split("\t")[:2]
+            if (src, dst) in to_be_extracted or (dst, src) in to_be_extracted:
+                extracted_edges.append(line)
+    return extracted_edges
