@@ -74,10 +74,10 @@ def attach_metadata(
         clusterID = seqID2clusterID[seqID]
         clusterID_list.append(clusterID)
     cifmol_dict = cifmol.to_dict()
-    cifmol_dict["chains"]["nodes"]["seqID"] = {
+    cifmol_dict["chains"]["nodes"]["seq_id"] = {
         "value" : np.array(seqID_list, dtype=str),
     }
-    cifmol_dict["chains"]["nodes"]["clusterID"] = {
+    cifmol_dict["chains"]["nodes"]["cluster_id"] = {
         "value" : np.array(clusterID_list, dtype=str),
     }
     return CIFMolAttached.from_dict(cifmol_dict)

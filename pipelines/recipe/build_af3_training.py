@@ -17,7 +17,7 @@ af3_recipe = RecipeBook()
 
 af3_recipe.add(
     targets=[(("cifmol_filtered_by_resolution_date", CIFMol),)],
-    instruction=filter_by_resolution_and_date(resolution_cutoff=8.0, date_cutoff=date(2024,1,1)),
+    instruction=filter_by_resolution_and_date(resolution_cutoff=9.0, date_cutoff=date(2021,9,30)),
     inputs=[
         {
             "kwargs": {
@@ -34,7 +34,7 @@ af3_recipe.add(
     inputs=[
         {
             "kwargs": {
-                "cifmol": ("cifmol", CIFMol),
+                "cifmol": ("cifmol_filtered_by_resolution_date", CIFMol),
             },
         },
     ],

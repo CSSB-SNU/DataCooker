@@ -8,7 +8,7 @@ from pipelines.instructions.seq_instructions import extract_sequence_from_cifmol
 
 
 def filter_by_resolution_and_date(
-    resolution_cutoff: float = 8.0,
+    resolution_cutoff: float = 9.0,
     date_cutoff: date = date(2099, 1, 1),
 ) -> Callable[[CIFMol|None], CIFMol|None]:
     """Filter instruction to select entries by resolution and date."""
@@ -57,7 +57,7 @@ def filter_signalp(
             cursor += len(chain_cifmol.residues)
             continue
         _, signalp_end = signalp_dict[seq_id]
-        valid_residue_indices.extend(list(range(cursor + signalp_end, cursor + len(chain_cifmol.residues))))
+        valid_residue_indices.extend(list(range(cursor + signalp_end + 1 , cursor + len(chain_cifmol.residues))))
         cursor += len(chain_cifmol.residues)
     filtered_cifmol = cifmol.residues[valid_residue_indices].extract()
     return filtered_cifmol.to_dict()

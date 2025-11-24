@@ -1,6 +1,6 @@
 # rebuild
-old_env_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/cif_new2_shard0.lmdb}
-new_env_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/cif_filtered.lmdb}
+old_env_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/cif.lmdb}
+new_env_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/cif_20210930_res9.lmdb}
 
 recipe: ${p:pipelines/recipe/build_af3_training.py}
 metadata_recipe: ${p:pipelines/recipe/load_metadata.py}
@@ -12,4 +12,4 @@ metadata_input:
   signalp_dir: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/signalp}
 
 n_jobs: -1
-chunk_size: 10000
+chunk_size: 1000

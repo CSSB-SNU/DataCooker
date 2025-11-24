@@ -9,6 +9,18 @@ from pipelines.utils.convert import from_bytes, to_bytes
 
 logger = logging.getLogger(__name__)
 
+_ENV_CACHE: dict[tuple[str, bool], lmdb.Environment] = {}
+
+def _get_env(path: Path, *, readonly: bool = True, lock: bool = False) -> lmdb.Environment:
+    """Get (or lazily create) an LMDB env for the current process."""
+    key = (str(path), readonly)
+    env = _ENV_CACHE.get(key)
+    if env is None:
+        env = lmdb.open(str(path), readonly=readonly, lock=lock)
+        _ENV_CACHE[key] = env
+    return env
+
+
 def extract_key_list(env_path: Path) -> list[str]:
     """
     Retrieve all keys from the LMDB database.
@@ -126,7 +138,7 @@ def rebuild_lmdb(  # noqa: PLR0913
     new_env = lmdb.open(str(new_env_path), map_size=int(map_size))
 
     if metadata_recipe is not None:
-        metadata_dict = rebuild(
+        metadata_dict, metadata_targets = rebuild(
             recipe_path=metadata_recipe,
             datadict=metadata_input,
             **extra_kwargs,
@@ -142,12 +154,17 @@ def rebuild_lmdb(  # noqa: PLR0913
                 datadict:dict = inner_dict.copy()
                 if metadata_recipe is not None:
                     datadict.update(metadata_dict)
-                rebuild_data_dict = rebuild(
+                rebuild_data_dict, targets = rebuild(
                     recipe_path=recipe,
                     datadict=datadict,
                     transform_func=transform_func,
                     **extra_kwargs,
                 )
+                # TODO handle multiple targets
+                target = targets[0]
+                if rebuild_data_dict[target] is None or rebuild_data_dict[target] == {}:
+                    continue
+
                 output_dict[id] = rebuild_data_dict
             zcompressed_data = to_bytes(output_dict)
             return key.encode(), zcompressed_data, None
@@ -245,10 +262,9 @@ def read_lmdb(env_path: Path, key: str) -> dict:
         dict
             The data dictionary retrieved from the LMDB database.
     """
-    env = lmdb.open(str(env_path), readonly=True, lock=False)
+    env = _get_env(env_path, readonly=True, lock=False)
     with env.begin() as txn:
         value = txn.get(key.encode())
-    env.close()
     if value is None:
         msg = f"Key '{key}' not found in LMDB database."
         raise KeyError(msg)

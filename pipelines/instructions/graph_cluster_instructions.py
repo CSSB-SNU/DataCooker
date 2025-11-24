@@ -10,7 +10,7 @@ from biomol.core.container import FeatureContainer
 from biomol.core.feature import EdgeFeature, NodeFeature
 from joblib import Parallel, delayed
 
-from pipelines.cifmol import CIFMol
+from pipelines.cifmol import CIFMol, CIFMolAttached
 from pipelines.instructions.seq_instructions import graph_to_canonical_sequence
 from pipelines.utils.convert import to_bytes
 
@@ -87,6 +87,36 @@ def extract_graph_per_cifmol() -> Callable[..., bytes]:
 
         cluster_list = np.array(cluster_list)
         features = {
+            "chain_ids": NodeFeature(np.array(chain_id_list)),
+            "seq_clusters": NodeFeature(cluster_list),
+            "contact_edges": EdgeFeature(
+                value=np.array([1] * len(src)),
+                src_indices=np.array(src),
+                dst_indices=np.array(dst),
+            ),
+        }
+        container = FeatureContainer(features)
+        return to_bytes({"cluster_graph": container})
+
+    return _worker
+
+
+
+def extract_graph_per_cifmol_attached() -> Callable[..., bytes]:
+    """Read CIFMolAttached and extract chain-level contact graphs with cluster labels."""
+
+    def _worker(
+        cifmol: CIFMolAttached,
+    ) -> type[InputType]:
+        # chain level contact graph
+        contact_graph = cifmol.chains.contact
+        chain_id_list = cifmol.chains.chain_id.value
+        cluster_list = cifmol.chains.cluster_id.value
+        src, dst = contact_graph.src_indices, contact_graph.dst_indices
+
+        cluster_list = np.array(cluster_list)
+        features = {
+            "chain_ids": NodeFeature(np.array(chain_id_list)),
             "seq_clusters": NodeFeature(cluster_list),
             "contact_edges": EdgeFeature(
                 value=np.array([1] * len(src)),
@@ -142,10 +172,10 @@ def extract_graphs(n_jobs: int = -1) -> Callable[..., type[InputType]]:
         chain_id_list = cifmol.chains.chain_id.value
         src, dst = contact_graph.src_indices, contact_graph.dst_indices
         graph = nx.Graph()
-        for ii, chain_id in enumerate(chain_id_list):
-            graph.add_node(ii, label=chain_id_to_cluster[chain_id])
+        for chain_id in chain_id_list:
+            graph.add_node(chain_id, label=chain_id_to_cluster[chain_id])
         for s, d in zip(src, dst, strict=True):
-            graph.add_edge(s, d)
+            graph.add_edge(chain_id_list[s], chain_id_list[d])
 
         return graph
 

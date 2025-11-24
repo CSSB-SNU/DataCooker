@@ -156,7 +156,7 @@ class Cooker:
             else:
                 msg = f"targets '{out}' not found in context."
                 raise KeyError(msg)
-        return results
+        return results, targets
 
 class LoadFunc(Protocol):
     """Protocol for data loading functions."""
@@ -194,7 +194,8 @@ def parse(
     cooker = Cooker(parse_cache=parse_cache, recipebook=str(recipe_path))
     cooker.prep(datadict, fields=list(datadict.keys()))
     cooker.cook()
-    return cooker.serve(targets=targets)
+    results, targets = cooker.serve(targets=targets)
+    return results
 
 def rebuild(
     recipe_path: Path,
