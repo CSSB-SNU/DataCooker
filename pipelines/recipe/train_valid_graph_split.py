@@ -7,6 +7,7 @@ from pipelines.instructions.graph_cluster_instructions import (
     split_graph_by_components,
     split_train_valid,
     extract_edges,
+    summarize_split_results,
 )
 
 """Build a sequence clustering Cooker."""
@@ -78,6 +79,26 @@ tv_split_recipe.add(
     ],
 )
 
+tv_split_recipe.add(
+    targets=[
+        (("train_edge_statistics", list),),
+        (("valid_edge_statistics", list),),
+    ],
+    instruction=summarize_split_results,
+    inputs=[
+        {
+            "kwargs": {
+                "edge_list": ("train_edges", list),
+            },
+        },
+        {
+            "kwargs": {
+                "edge_list": ("valid_edges", list),
+            },
+        },
+    ],
+)
+
 
 RECIPE = tv_split_recipe
-TARGETS = ["train_edge_list", "valid_edge_list"]
+TARGETS = ["train_edge_list", "valid_edge_list", "train_edge_statistics", "valid_edge_statistics"]

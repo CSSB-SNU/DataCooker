@@ -676,6 +676,7 @@ def train_valid_split(
     output_dir: Path,
     train_ratio: float,
 ) -> None:
+    """Split edge list into train and valid sets."""
     from pipelines.recipe.train_valid_graph_split import RECIPE, TARGETS
     recipe, targets = RECIPE, TARGETS
 
@@ -696,6 +697,9 @@ def train_valid_split(
         recipe=recipe,
         targets=targets,
     )
+    click.echo(result["train_edge_statistics"])
+    click.echo(result["valid_edge_statistics"])
+    breakpoint()
 
     train_edge_list, valid_edge_list = result["train_edge_list"], result["valid_edge_list"]
 
@@ -705,10 +709,10 @@ def train_valid_split(
     output_dir.mkdir(parents=True, exist_ok=True)
     with train_output_path.open("w") as f:
         for line in train_edge_list:
-            f.write(f"{line}\n")
+            f.write(line)
     with valid_output_path.open("w") as f:
         for line in valid_edge_list:
-            f.write(f"{line}\n")
+            f.write(line)
 
 
 if __name__ == "__main__":

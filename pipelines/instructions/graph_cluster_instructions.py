@@ -1,5 +1,5 @@
 import itertools
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, OrderedDict
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TypeVar
@@ -525,13 +525,14 @@ def build_whole_graph(edge_tsv_path: Path, ignore_nodes:list|None=None) -> tuple
     """Build a whole graph from edge TSV file."""
     edges = []
     polymer_edges = []
+    ligand_tags = {"L", "B", "X"}
     with edge_tsv_path.open("r", encoding="utf-8") as f:
         for line in f:
             src, dst = line.strip().split("\t")[:2]
             if ignore_nodes and (src in ignore_nodes or dst in ignore_nodes):
                 continue
             # test
-            if src[1] != "L" and dst[1] != "L":
+            if src[1] not in ligand_tags and dst[1] not in ligand_tags:
                 polymer_edges.append((src, dst))
             edges.append((src, dst))
     whole, polymer = nx.Graph(), nx.Graph()
@@ -626,3 +627,49 @@ def extract_edges(edge_tsv_path: Path, to_be_extracted: list[tuple[str, str]]) -
             if (src, dst) in to_be_extracted or (dst, src) in to_be_extracted:
                 extracted_edges.append(line)
     return extracted_edges
+
+def summarize_split_results(
+    edge_list: list[tuple[str, str]],
+) -> list[str]:
+    """Summarize split results into edge list strings."""
+    _map = {"B" : "L", "Q": "P"}
+    category_priority = ["P", "A", "D", "R", "N", "L"]
+    priority_map = {c: i for i, c in enumerate(category_priority)}
+
+    # 1. Create all possible ordered pairs by priority
+    pair_keys = []
+    for c1 in category_priority:
+        for c2 in category_priority:
+            # normalize: the higher priority (smaller index) goes to the BACK
+            # so we force order by comparing priority index
+            if priority_map[c1] > priority_map[c2]:
+                key = c2 + c1
+            else:
+                key = c1 + c2
+            if key not in pair_keys:
+                pair_keys.append(key)
+
+    counts = {k: 0 for k in pair_keys}
+
+    # 2. Count edges
+    for src, dst in edge_list:
+        c1, c2 = src[1], dst[1]
+        if c1 in _map:
+            c1 = _map[c1]
+        if c2 in _map:
+            c2 = _map[c2]
+        if c1 not in priority_map or c2 not in priority_map:
+            continue
+        # normalize AP, PA → PA
+        if priority_map[c1] > priority_map[c2]:
+            key = c2 + c1
+        else:
+            key = c1 + c2
+        counts[key] += 1
+
+    # 3. OrderedDict
+    ordered = OrderedDict()
+    for k in pair_keys:
+        ordered[k] = counts[k]
+
+    return ordered
