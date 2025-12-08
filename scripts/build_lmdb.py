@@ -172,7 +172,7 @@ def merge(shard_pattern: str, output: Path, map_size: float, overwrite: bool) ->
 
 @cli.command("rebuild")
 @click.argument("config", type=click.Path(exists=True, path_type=Path))
-@click.option("--map-size", "-m", type=float, default=1e10, show_default=True)
+@click.option("--map-size", "-m", type=float, default=1e12, show_default=True)
 def rebuild(
     config: Path,
     map_size: float,

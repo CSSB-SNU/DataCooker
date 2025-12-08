@@ -15,7 +15,7 @@ dependencies = [
     "typing_extensions>=4.15.0,<5",
     "numpy>=2.2.6,<3",
     "networkx>=3.2",
-    "biomol @ git+https://github.com/CSSB-SNU/BioMol.git@fc1a05b",
+    "biomol>=1.0.0",
 ]
 
 [build-system]

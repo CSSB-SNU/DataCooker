@@ -171,6 +171,7 @@ def rebuild_lmdb(  # noqa: PLR0913
         except Exception as error:  # noqa: BLE001
             return key.encode(), to_bytes({}), error
 
+
     # remove UNL
     old_key_list = extract_key_list(old_env_path)
     _already_parsed_keys = extract_key_list(new_env_path)

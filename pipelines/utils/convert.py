@@ -17,7 +17,7 @@ def flatten_data(data: dict) -> tuple[dict, dict]:
             _key = str(uuid.uuid4())
             template[key] = _key
             buffer = BytesIO()
-            np.save(buffer, np.ascontiguousarray(value), allow_pickle=False)
+            np.save(buffer, np.ascontiguousarray(value), allow_pickle=True)
             flatten[_key] = buffer.getvalue()
         elif isinstance(value, dict):
             _template, _flatten = flatten_data(value)

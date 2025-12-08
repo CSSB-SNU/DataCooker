@@ -1,0 +1,10 @@
+# rebuild
+old_env_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/a3m.lmdb}
+new_env_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/slim_a3m.lmdb}
+
+recipe: ${p:/home/psk6950/DataCooker/pipelines/recipe/filter_a3m_lmdb.py}
+
+convert_func: pipelines.transforms.container_transforms.convert_to_msa_container
+
+n_jobs: -1
+chunk_size: 10000
