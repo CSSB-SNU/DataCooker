@@ -1,13 +1,14 @@
 from pathlib import Path
+
 from networkx import Graph
 
 from datacooker import RecipeBook
 from pipelines.instructions.graph_cluster_instructions import (
     build_whole_graph,
+    count_category_count,
+    extract_edges,
     split_graph_by_components,
     split_train_valid,
-    extract_edges,
-    summarize_split_results,
 )
 
 """Build a sequence clustering Cooker."""
@@ -31,7 +32,7 @@ tv_split_recipe.add(
 tv_split_recipe.add(
     targets=[
         ("subgraphs", dict),
-        ("total_edges", int),
+        ("edge_wo_ligand_counts", dict),
     ],
     instruction=split_graph_by_components,
     inputs={
@@ -51,7 +52,7 @@ tv_split_recipe.add(
         "kwargs": {
             "whole_graph": ("whole_graph", Graph),
             "subgraphs": ("subgraphs", dict),
-            "total_edges": ("total_edges", int),
+            "edge_wo_ligand_counts": ("edge_wo_ligand_counts", dict),
             "train_ratio": ("train_ratio", float),
         },
     },
@@ -84,7 +85,7 @@ tv_split_recipe.add(
         (("train_edge_statistics", list),),
         (("valid_edge_statistics", list),),
     ],
-    instruction=summarize_split_results,
+    instruction=count_category_count,
     inputs=[
         {
             "kwargs": {

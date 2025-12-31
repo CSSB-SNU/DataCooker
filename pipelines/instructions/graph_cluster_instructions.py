@@ -1,5 +1,5 @@
 import itertools
-from collections import Counter, defaultdict, OrderedDict
+from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TypeVar
@@ -540,26 +540,85 @@ def build_whole_graph(edge_tsv_path: Path, ignore_nodes:list|None=None) -> tuple
     polymer.add_edges_from(polymer_edges)
     return whole, polymer
 
+
+def build_category()-> tuple[dict[str, int], dict[str, str], dict[str, int]]:
+    """Build category pairs and priority map."""
+    special_map = {"B" : "L", "Q": "P"}
+    category_priority = ["P", "A", "D", "R", "N", "L"]
+    priority_map = {c: i for i, c in enumerate(category_priority)}
+
+    # 1. Create all possible ordered pairs by priority
+    pair_keys = []
+    for c1 in category_priority:
+        for c2 in category_priority:
+            # normalize: the higher priority (smaller index) goes to the BACK
+            # so we force order by comparing priority index
+            key = c2 + c1 if priority_map[c1] > priority_map[c2] else c1 + c2
+            if key not in pair_keys:
+                pair_keys.append(key)
+
+    counts = dict.fromkeys(pair_keys, 0)
+    return counts, special_map, priority_map
+
+
+def count_category_count(
+    edge_list: list[tuple[str, str]],
+) -> list[str]:
+    """Summarize split results into edge list strings."""
+    counts, special_map, priority_map = build_category()
+
+    # 2. Count edges
+    for src, dst in edge_list:
+        c1, c2 = src[1], dst[1]
+        if c1 in special_map:
+            c1 = special_map[c1]
+        if c2 in special_map:
+            c2 = special_map[c2]
+        if c1 not in priority_map or c2 not in priority_map:
+            continue
+        # normalize AP, PA → PA
+        key = c2 + c1 if priority_map[c1] > priority_map[c2] else c1 + c2
+        counts[key] += 1
+
+    # 3. OrderedDict
+    ordered = OrderedDict()
+    for k in counts:
+        ordered[k] = counts[k]
+
+    return ordered
+
+
 def split_graph_by_components(
     whole_graph: nx.Graph,
-) -> tuple[list[nx.Graph], int]:
+) -> tuple[list[nx.Graph], dict[str, int]]:
     """Split a whole graph into connected components."""
-    total_edges = whole_graph.number_of_edges()
+    edge_wo_ligand_counts, _, _ = build_category()
+
     components = list(nx.connected_components(whole_graph))
     subgraphs = []
     for comp in components:
         subgraph = whole_graph.subgraph(comp).copy()
+
+        subgraph_edge_list = list(subgraph.edges())
+        if not subgraph_edge_list:
+            continue  # skip empty subgraphs
+        _counts = count_category_count(subgraph_edge_list)
+        for k, v in _counts.items():
+            edge_wo_ligand_counts[k] += v
+
         subgraphs.append(subgraph)
     # sort by size descending
     subgraphs.sort(key=lambda g: g.number_of_nodes(), reverse=True)
 
-    return subgraphs, total_edges
+    return subgraphs, edge_wo_ligand_counts
+
 
 def split_train_valid(
     whole_graph: nx.Graph,
-    total_edges: int,
+    edge_wo_ligand_counts: int,
     subgraphs: list[nx.Graph],
     train_ratio: float = 0.9,  # fraction of train set
+    min_valid_size: int = 100,  # min #edges in valid set
 ) -> tuple[list[nx.Graph], list[nx.Graph]]:
     """
     Split subgraphs into train and valid sets.
@@ -567,7 +626,7 @@ def split_train_valid(
     Train:
         - Always includes the largest component
         - Then adds smallest components (by #edges) one by one
-          until total #edges in train <= total_edges * train_ratio
+          until total #edges in train <= total_edges * train_ratio for each types
 
     Valid:
         - All remaining components
@@ -575,22 +634,34 @@ def split_train_valid(
     if not subgraphs:
         return [], []
 
-    target_train_edges = int(total_edges * train_ratio)
+    min_edge_counts = {k: min(int(v * (1 - train_ratio)), min_valid_size) for k, v in edge_wo_ligand_counts.items()} # min edges per category in valid set
 
-    train_indices: set[int] = {0}
-    train_edge_count = subgraphs[0].number_of_edges()
+    # test (DD except)
+    remaining_edges = edge_wo_ligand_counts.copy()
+
+    # find must-have train components and add to train set
+    train_indices = set()
+    train_edge_count = dict.fromkeys(remaining_edges, 0)
+    for ii, subg in enumerate(subgraphs):
+        comp_edges = count_category_count(list(subg.edges()))
+        must_have = {k : comp_edges[k] > min_edge_counts[k] for k in edge_wo_ligand_counts}
+        if any(must_have.values()):
+            train_indices.add(ii)
+            remaining_edges = {k: remaining_edges[k] - comp_edges[k] for k in remaining_edges}
+            train_edge_count = {k: train_edge_count[k] + comp_edges[k] for k in comp_edges}
 
     remaining_indices = list(range(1, len(subgraphs)))
     remaining_indices.sort(key=lambda i: subgraphs[i].number_of_edges())
 
     for idx in remaining_indices:
-        comp_edges = subgraphs[idx].number_of_edges()
-
-        if train_edge_count + comp_edges <= target_train_edges:
-            train_indices.add(idx)
-            train_edge_count += comp_edges
-        else:
-            break
+        comp_edges = count_category_count(list(subgraphs[idx].edges()))
+        _remaining_edges = {k: remaining_edges[k] - comp_edges[k] for k in remaining_edges}
+        ok = {k : _remaining_edges[k] >= min_edge_counts[k] for k in remaining_edges}
+        train_edge_count = {k: train_edge_count[k] + comp_edges[k] for k in comp_edges}
+        if not all(ok.values()):
+            continue
+        train_indices.add(idx)
+        remaining_edges = _remaining_edges
 
     train_subgraphs = [subgraphs[i] for i in sorted(train_indices)]
     valid_subgraphs = [subgraphs[i] for i in range(len(subgraphs)) if i not in train_indices]
@@ -627,49 +698,3 @@ def extract_edges(edge_tsv_path: Path, to_be_extracted: list[tuple[str, str]]) -
             if (src, dst) in to_be_extracted or (dst, src) in to_be_extracted:
                 extracted_edges.append(line)
     return extracted_edges
-
-def summarize_split_results(
-    edge_list: list[tuple[str, str]],
-) -> list[str]:
-    """Summarize split results into edge list strings."""
-    _map = {"B" : "L", "Q": "P"}
-    category_priority = ["P", "A", "D", "R", "N", "L"]
-    priority_map = {c: i for i, c in enumerate(category_priority)}
-
-    # 1. Create all possible ordered pairs by priority
-    pair_keys = []
-    for c1 in category_priority:
-        for c2 in category_priority:
-            # normalize: the higher priority (smaller index) goes to the BACK
-            # so we force order by comparing priority index
-            if priority_map[c1] > priority_map[c2]:
-                key = c2 + c1
-            else:
-                key = c1 + c2
-            if key not in pair_keys:
-                pair_keys.append(key)
-
-    counts = {k: 0 for k in pair_keys}
-
-    # 2. Count edges
-    for src, dst in edge_list:
-        c1, c2 = src[1], dst[1]
-        if c1 in _map:
-            c1 = _map[c1]
-        if c2 in _map:
-            c2 = _map[c2]
-        if c1 not in priority_map or c2 not in priority_map:
-            continue
-        # normalize AP, PA → PA
-        if priority_map[c1] > priority_map[c2]:
-            key = c2 + c1
-        else:
-            key = c1 + c2
-        counts[key] += 1
-
-    # 3. OrderedDict
-    ordered = OrderedDict()
-    for k in pair_keys:
-        ordered[k] = counts[k]
-
-    return ordered

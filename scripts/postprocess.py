@@ -699,7 +699,6 @@ def train_valid_split(
     )
     click.echo(result["train_edge_statistics"])
     click.echo(result["valid_edge_statistics"])
-    breakpoint()
 
     train_edge_list, valid_edge_list = result["train_edge_list"], result["valid_edge_list"]
 
