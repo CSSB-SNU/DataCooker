@@ -3,3 +3,7 @@ logs/
 .vscode/
 test*
 *.cif
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class
