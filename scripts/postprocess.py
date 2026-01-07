@@ -711,6 +711,7 @@ def distance_profile(  # noqa: PLR0913
             return pdb_id, np.zeros(len(bins) - 1, dtype=np.float32)
         return pdb_id, np.mean(profiles, axis=0, dtype=np.float32)
 
+    _process_pdb(key_list[0])
     breakpoint()
 
     results = Parallel(n_jobs=njobs, verbose=10)(
