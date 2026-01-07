@@ -41,4 +41,4 @@ PY
 
 ## Next steps
 - Follow the [Tutorials](tutorials.md) to run a custom recipe and a packaged pipeline.
-- Read [Concepts](concepts.md) for dependency resolution details.
+- Review [Concepts](index.md#core-concepts) for dependency resolution details.

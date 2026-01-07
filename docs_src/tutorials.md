@@ -50,6 +50,11 @@ Common recipe books to explore:
 - `pipelines/recipe/graph_lmdb.py`, `pipelines/recipe/graph_lmdb_from_attached.py`: LMDB builders for graph data
 - `pipelines/recipe/train_valid_graph_split.py`: graph splits with basic stats
 
+## 2.5 Recipe library (what's included)
+- **Data parsing**: `a3m_recipe_book.py`, `cif_recipe_book.py`, `ccd_recipe_book.py`, `extract_fasta.py`
+- **Packaging/metadata**: `filter_a3m_lmdb.py`, `build_seq_hash_map.py`, `build_metadata.py`, `load_metadata.py`, `build_af3_training.py`
+- **Graph pipelines**: `graph_lmdb.py`, `graph_lmdb_from_attached.py`, `seq_cluster.py`, `train_valid_graph_split.py`
+
 ## 3. Iterate on your own recipe
 Use the same pattern as the minimal example: declare targets and inputs, add the instruction, and call `cooker.prep/cook/serve`. Keep recipe files alongside your data project or inside `pipelines/recipe/` to reuse shared instructions and transforms.
 
