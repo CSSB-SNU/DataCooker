@@ -1,0 +1,13 @@
+#
+# Distance profile configuration
+#
+cif_db_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/cif_20210930_res9.lmdb}
+output_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/metadata/distance_profile_20210930_res9.npz}
+
+# histogram parameters
+bin_width: 0.5
+min_distance: 2.0
+max_distance: 22.0
+
+# joblib parallelism (-1 uses all cores)
+njobs: -1

@@ -3,12 +3,15 @@ from pathlib import Path
 import click
 import lmdb
 import networkx as nx
+import numpy as np
 from joblib import Parallel, delayed
+from omegaconf import OmegaConf
 
 from datacooker import Cooker, ParsingCache, RecipeBook
 from pipelines.cifmol import CIFMol, CIFMolAttached
 from pipelines.utils.convert import from_bytes
 from pipelines.utils.lmdb import extract_key_list
+from pipelines.instructions.distance_profile import get_shortest_distances
 
 
 def load_cif(key: str, env_path: Path) -> dict[str, CIFMol]:
@@ -239,6 +242,56 @@ def cifmol_meta_process(
         recipe=recipe,
         targets=targets,
     )
+
+
+def _residue_distance_profile(
+    cifmol: CIFMol,
+    bins: np.ndarray,
+    min_distance: float,
+    max_distance: float,
+) -> np.ndarray:
+    """Compute normalized residue–residue shortest-distance histogram for a CIFMol."""
+    xyz = np.asarray(cifmol.atoms.xyz.value, dtype=np.float32)
+    atom_mask = np.isfinite(xyz).all(axis=1)
+    if not np.any(atom_mask):
+        return np.zeros(len(bins) - 1, dtype=np.float32)
+
+    atom_to_res_idx = np.asarray(cifmol.index_table.atom_to_res, dtype=np.int64)
+    residue_dists, residue_mask = get_shortest_distances(
+        atom_pos=xyz,
+        atom_pos_mask=atom_mask,
+        atom_to_res_idx=atom_to_res_idx,
+        min_distance=min_distance,
+        max_distance=max_distance,
+    )
+
+    if residue_dists.size == 0:
+        return np.zeros(len(bins) - 1, dtype=np.float32)
+
+    n_res = residue_dists.shape[0]
+    tri_mask = np.triu(np.ones((n_res, n_res), dtype=bool), k=1)
+    valid_mask = tri_mask & residue_mask
+    distances = residue_dists[valid_mask]
+    if distances.size == 0:
+        return np.zeros(len(bins) - 1, dtype=np.float32)
+
+    hist, _ = np.histogram(distances, bins=bins)
+    hist = hist.astype(np.float32)
+    total = hist.sum()
+    if total > 0:
+        hist /= total
+    return hist
+
+
+def _load_distance_profile_config(config_path: Path) -> dict:
+    """Load distance profile config using OmegaConf with Path resolver."""
+    OmegaConf.register_new_resolver("p", lambda x: Path(x))
+    cfg = OmegaConf.load(config_path)
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    if not isinstance(cfg_dict, dict):
+        msg = "Configuration file must contain a dictionary at the top level."
+        raise click.ClickException(msg)
+    return dict(cfg_dict)
 
 
 @click.group()
@@ -598,6 +651,91 @@ def graph_lmdb_attached(
                 zcompressed = graph_dict[key]
                 txn.put(key.encode(), zcompressed)
 
+
+
+@cli.command("distance_profile")
+@click.argument("cif_db_path", required=False, type=click.Path(path_type=Path))
+@click.argument("output_path", required=False, type=click.Path(path_type=Path))
+@click.option("--config", "-c", type=click.Path(path_type=Path), help="YAML config path. Overrides other args if provided.")
+@click.option("--bin-width", "-b", type=float, default=0.5, show_default=True)
+@click.option("--min-distance", type=float, default=2.0, show_default=True)
+@click.option("--max-distance", type=float, default=22.0, show_default=True)
+@click.option("--njobs", "-j", type=int, default=-1, show_default=True)
+def distance_profile(  # noqa: PLR0913
+    cif_db_path: Path | None,
+    output_path: Path | None,
+    config: Path | None,
+    bin_width: float,
+    min_distance: float,
+    max_distance: float,
+    njobs: int,
+) -> None:
+    """Compute residue-level distance profile averaged per PDB ID then globally."""
+    if config is not None:
+        cfg = _load_distance_profile_config(config)
+        cif_db_path = cfg.get("cif_db_path", cif_db_path)
+        output_path = cfg.get("output_path", output_path)
+        bin_width = float(cfg.get("bin_width", bin_width))
+        min_distance = float(cfg.get("min_distance", min_distance))
+        max_distance = float(cfg.get("max_distance", max_distance))
+        njobs = int(cfg.get("njobs", njobs))
+
+    if cif_db_path is None or output_path is None:
+        msg = "Provide cif_db_path and output_path either via args or config."
+        raise click.ClickException(msg)
+
+    cif_db_path = Path(cif_db_path)
+    output_path = Path(output_path)
+    key_list = extract_key_list(cif_db_path)
+    click.echo(f"Computing distance profiles for {len(key_list)} CIF entries...")
+
+    bins = np.arange(min_distance, max_distance + bin_width, bin_width, dtype=np.float32)
+    if bins[-1] < max_distance:
+        bins = np.append(bins, max_distance)
+    if bins.size < 2:
+        msg = "Distance bins are invalid; check bin_width/min/max values."
+        raise click.ClickException(msg)
+
+    def _process_pdb(pdb_id: str) -> tuple[str, np.ndarray]:
+        cifmol_dict = load_cif(pdb_id, env_path=cif_db_path)
+        profiles = [
+            _residue_distance_profile(
+                cifmol=obj["cifmol"],
+                bins=bins,
+                min_distance=min_distance,
+                max_distance=max_distance,
+            )
+            for obj in cifmol_dict.values()
+        ]
+        if len(profiles) == 0:
+            return pdb_id, np.zeros(len(bins) - 1, dtype=np.float32)
+        return pdb_id, np.mean(profiles, axis=0, dtype=np.float32)
+
+    breakpoint()
+
+    results = Parallel(n_jobs=njobs, verbose=10)(
+        delayed(_process_pdb)(key) for key in key_list
+    )
+
+    if len(results) == 0:
+        msg = "No profiles were computed."
+        raise click.ClickException(msg)
+
+    pdb_ids, pdb_profiles = zip(*results)
+    pdb_profiles_array = np.vstack(pdb_profiles)
+    global_profile = np.mean(pdb_profiles_array, axis=0, dtype=np.float32)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output_path,
+        bins=bins,
+        pdb_ids=np.array(pdb_ids),
+        pdb_profiles=pdb_profiles_array,
+        global_profile=global_profile,
+    )
+
+    click.echo(f"Saved profiles to {output_path}")
+    click.echo(f"Global profile sum={global_profile.sum():.3f}")
 
 
 @cli.command("extract_edge")
