@@ -3,98 +3,6 @@ import numpy as np
 from numpy import ndarray
 
 
-def get_shortest_distances(
-    atom_pos: ndarray,
-    atom_pos_mask: ndarray,
-    atom_to_res_idx: ndarray,
-    min_distance: float = 2.0,
-    max_distance: float = 22.0,
-) -> tuple[ndarray, ndarray]:
-    """Compute residue-level shortest distances from atom positions."""
-    B, L, _ = atom_pos.shape
-
-    # 1) Atom-level pairwise distances (B, N, L, L)
-    diff = atom_pos[:, :, None, :] - atom_pos[:, None, :, :]
-    dist = np.linalg.norm(diff, axis=-1)  # (B, L, L)
-
-    # Apply atom mask
-    mask_i = atom_pos_mask[:, :, None]  # (B, L, 1)
-    mask_j = atom_pos_mask[:, None, :]  # (B, 1, L)
-    valid_atom_mask = mask_i & mask_j  # (B, L, L)
-
-    dist = np.where(~valid_atom_mask, max_distance, dist)
-    dist = np.clip(dist, min_distance, max_distance)
-
-    # 2) Build residue existence mask (B, R_max)
-    R_max = int(atom_to_res_idx.max().item()) + 1
-
-    # A position is valid if any atom at that position is valid
-    residue_exists = np.zeros((B, R_max), dtype=bool)
-
-    # Flatten and mark residues that actually appear
-    batch_idx = np.broadcast_to(np.arange(B)[:, None], (B, L)).reshape(-1)
-    flat_atom_to_res_idx = atom_to_res_idx.reshape(-1)
-    flat_pos_mask = atom_pos_mask.reshape(-1)
-
-    valid_batch_idx = batch_idx[flat_pos_mask]
-    valid_res_idx = flat_atom_to_res_idx[flat_pos_mask]
-
-    residue_exists[valid_batch_idx, valid_res_idx] = True
-
-    # Residue pair mask: both residues must exist
-    mask_i_res = residue_exists[:, :, None]  # (B, R_max, 1)
-    mask_j_res = residue_exists[:, None, :]  # (B, 1, R_max)
-    residue_mask = mask_i_res & mask_j_res  # (B, R_max, R_max)
-
-    # 3) Aggregate shortest distances to residue level using scatter-reduce (min)
-    # Map (i, j) residue pairs to flat indices per batch
-    ri = np.broadcast_to(atom_to_res_idx[:, :, None], (B, L, L))  # (B, L, L)
-    rj = np.broadcast_to(atom_to_res_idx[:, None, :], (B, L, L))  # (B, L, L)
-    pair_idx = ri * R_max + rj  # (B, L, L)
-
-    block_size = R_max * R_max
-    batch_offsets = np.arange(B).reshape(B, 1, 1) * block_size  # (B, 1, 1)
-
-    scatter_idx = batch_offsets + pair_idx  # (B, L, L)
-    scatter_idx_flat = scatter_idx.reshape(-1)  # (B * L * L,)
-
-    src = dist.reshape(-1)  # (B * L * L,)
-
-    out = np.full(
-        (B * block_size,),
-        max_distance,
-        dtype=dist.dtype,
-    )
-
-    # Use scatter_reduce_ with amin to take minimum per index
-    np.minimum.at(out, scatter_idx_flat, src)
-
-    residue_dists = out.reshape(B, R_max, R_max)
-
-    return residue_dists, residue_mask
-
-
-
-def get_contact_map(
-    atom_pos: ndarray,
-    atom_pos_mask: ndarray,
-    atom_to_res_idx: ndarray,
-    contact_threshold: float = 6.0,
-) -> tuple[ndarray, ndarray]:
-    """Compute residue-level contact map from atom positions."""
-    residue_dists, residue_mask = get_shortest_distances(
-        atom_pos=atom_pos,
-        atom_pos_mask=atom_pos_mask,
-        atom_to_res_idx=atom_to_res_idx,
-    )
-
-    contact_map = (
-        residue_dists <= contact_threshold
-    ) & residue_mask  # (B, R_max, R_max)
-
-    return contact_map, residue_mask
-
-
 def neighbor_list_grid(  # noqa: PLR0915
     xyz: np.ndarray,
     d_thr: float,
@@ -345,3 +253,59 @@ def pdist_clipped(
     dist[col_idx, row_idx] = dist_ij
 
     return dist
+
+def get_shortest_distances(
+    atom_pos: ndarray,
+    atom_pos_mask: ndarray,
+    atom_to_res_idx: ndarray,
+    min_distance: float = 2.0,
+    max_distance: float = 22.0,
+) -> tuple[ndarray, ndarray]:
+    """Compute residue-level shortest distances from atom positions (single example)."""
+    L, _ = atom_pos.shape
+
+    # 1) Atom-level pairwise distances (L, L)
+    dist = pdist_clipped(
+        atom_pos,
+        d_thr=max_distance,
+    )
+
+    # Apply atom mask
+    mask_i = atom_pos_mask[:, None]  # (L, 1)
+    mask_j = atom_pos_mask[None, :]  # (1, L)
+    valid_atom_mask = mask_i & mask_j  # (L, L)
+
+    dist = np.where(~valid_atom_mask, max_distance, dist)
+    dist = np.clip(dist, min_distance, max_distance)
+
+    # 2) Build residue existence mask (R_max)
+    R_max = int(atom_to_res_idx.max().item()) + 1
+
+    residue_exists = np.zeros((R_max,), dtype=bool)
+    valid_res_idx = atom_to_res_idx[atom_pos_mask]
+    residue_exists[valid_res_idx] = True
+
+    # Residue pair mask: both residues must exist
+    residue_mask = residue_exists[:, None] & residue_exists[None, :]
+
+    # 3) Aggregate shortest distances to residue level using scatter-reduce (min)
+    ri = np.broadcast_to(atom_to_res_idx[:, None], (L, L))
+    rj = np.broadcast_to(atom_to_res_idx[None, :], (L, L))
+    pair_idx = ri * R_max + rj  # (L, L)
+
+    block_size = R_max * R_max
+
+    scatter_idx_flat = pair_idx.reshape(-1)  # (L * L,)
+    src = dist.reshape(-1)  # (L * L,)
+
+    out = np.full(
+        (block_size,),
+        max_distance,
+        dtype=dist.dtype,
+    )
+
+    np.minimum.at(out, scatter_idx_flat, src)
+
+    residue_dists = out.reshape(R_max, R_max)
+
+    return residue_dists, residue_mask
