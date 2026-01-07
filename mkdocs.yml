@@ -32,5 +32,19 @@ nav:
   - Home (Concepts): index.md
   - Getting Started:
       - Installation (GitHub repo): getting-started.md
-      - Tutorials: tutorials.md
+      - Tutorials:
+          - Overview: tutorials.md
+          - A3M recipe: tutorials/a3m_recipe_book.md
+          - AF3 training LMDB: tutorials/build_af3_training.md
+          - Build metadata (placeholder): tutorials/build_metadata.md
+          - Build sequence hash map: tutorials/build_seq_hash_map.md
+          - CCD recipe: tutorials/ccd_recipe_book.md
+          - CIF recipe: tutorials/cif_recipe_book.md
+          - Extract FASTA: tutorials/extract_fasta.md
+          - Filter A3M LMDB: tutorials/filter_a3m_lmdb.md
+          - Graph LMDB: tutorials/graph_lmdb.md
+          - Graph LMDB (attached): tutorials/graph_lmdb_from_attached.md
+          - Load metadata: tutorials/load_metadata.md
+          - Sequence clustering: tutorials/seq_cluster.md
+          - Train/valid graph split: tutorials/train_valid_graph_split.md
   - API: api.md
