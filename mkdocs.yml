@@ -1,16 +1,32 @@
 site_name: DataCooker
 site_description: Documentation for the DataCooker recipe engine and pipelines.
-docs_dir: docs
-site_dir: site
+docs_dir: docs_src
+site_dir: docs
 
 theme:
   name: material
+  palette:
+    - scheme: slate
+      primary: blue
+      accent: amber
+  font:
+    text: "Space Grotesk"
+    code: "JetBrains Mono"
   features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - toc.integrate
     - navigation.instant
     - navigation.tracking
     - search.suggest
     - search.highlight
     - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+
+extra_css:
+  - stylesheets/triton.css
 
 plugins:
   - search
