@@ -29,8 +29,11 @@ markdown_extensions:
       alternate_style: true
 
 nav:
-  - Home: index.md
-  - Getting Started: getting-started.md
-  - Concepts: concepts.md
-  - Pipelines: pipelines.md
-  - API Reference: api.md
+  - Home (Concepts):
+      - Overview: index.md
+      - Concepts: concepts.md
+  - Getting Started:
+      - Installation (GitHub repo): getting-started.md
+      - Tutorials: tutorials.md
+      - Pipelines (reference): pipelines.md
+  - API: api.md

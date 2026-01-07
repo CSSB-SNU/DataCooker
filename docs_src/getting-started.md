@@ -1,19 +1,24 @@
 # Getting Started
 
-## Install
-- Python 3.10+ is required.
-- Development install (recommended while writing recipes):
+## Installation (GitHub repo)
+- Requirements: Python 3.10+.
+- Clone the repository:
+  ```bash
+  git clone https://github.com/psk6950/DataCooker.git
+  cd DataCooker
+  ```
+- Install (editable) for development:
   ```bash
   pip install -e .
   ```
-- If you use `pixi`, the repo already ships a lockfile:
+- Or use the included `pixi` environment:
   ```bash
   pixi install
   pixi shell
   ```
 
 ## Quick smoke test
-Run a minimal recipe to confirm the engine works:
+Confirm the engine runs:
 ```bash
 python - <<'PY'
 from datacooker import ParsingCache, RecipeBook, Cooker
@@ -35,6 +40,5 @@ PY
 - `configs`: Hydra/OmegaConf configs for pipeline runs
 
 ## Next steps
-- Try an existing recipe book, e.g. `pipelines/recipe/a3m_recipe_book.py`
-- Customize a recipe by swapping instructions or adding new targets
-- See [Concepts](concepts.md) for how dependency resolution works
+- Follow the [Tutorials](tutorials.md) to run a custom recipe and a packaged pipeline.
+- Read [Concepts](concepts.md) for dependency resolution details.
