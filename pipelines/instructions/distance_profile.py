@@ -256,62 +256,6 @@ def pdist_clipped(
 
     return dist
 
-def get_shortest_distances(
-    atom_pos: ndarray,
-    atom_pos_mask: ndarray,
-    atom_to_res_idx: ndarray,
-    min_distance: float = 2.0,
-    max_distance: float = 22.0,
-) -> tuple[ndarray, ndarray]:
-    """Compute residue-level shortest distances from atom positions (single example)."""
-    L, _ = atom_pos.shape
-
-    # 1) Atom-level pairwise distances (L, L)
-    dist = pdist_clipped(
-        atom_pos,
-        d_thr=max_distance,
-    )
-
-    # Apply atom mask
-    mask_i = atom_pos_mask[:, None]  # (L, 1)
-    mask_j = atom_pos_mask[None, :]  # (1, L)
-    valid_atom_mask = mask_i & mask_j  # (L, L)
-
-    dist = np.where(~valid_atom_mask, max_distance, dist)
-    dist = np.clip(dist, min_distance, max_distance)
-
-    # 2) Build residue existence mask (R_max)
-    R_max = int(atom_to_res_idx.max().item()) + 1
-
-    residue_exists = np.zeros((R_max,), dtype=bool)
-    valid_res_idx = atom_to_res_idx[atom_pos_mask]
-    residue_exists[valid_res_idx] = True
-
-    # Residue pair mask: both residues must exist
-    residue_mask = residue_exists[:, None] & residue_exists[None, :]
-
-    # 3) Aggregate shortest distances to residue level using scatter-reduce (min)
-    ri = np.broadcast_to(atom_to_res_idx[:, None], (L, L))
-    rj = np.broadcast_to(atom_to_res_idx[None, :], (L, L))
-    pair_idx = ri * R_max + rj  # (L, L)
-
-    block_size = R_max * R_max
-
-    scatter_idx_flat = pair_idx.reshape(-1)  # (L * L,)
-    src = dist.reshape(-1)  # (L * L,)
-
-    out = np.full(
-        (block_size,),
-        max_distance,
-        dtype=dist.dtype,
-    )
-
-    np.minimum.at(out, scatter_idx_flat, src)
-
-    residue_dists = out.reshape(R_max, R_max)
-
-    return residue_dists, residue_mask
-
 def _residue_distance_profile(
     cifmol: CIFMol,
     bins: np.ndarray,
@@ -347,48 +291,109 @@ def _residue_distance_profile(
 
     seq_ids = _to_numeric_seq_ids(np.asarray(cifmol.residues.cif_idx.value))
 
-    residue_dists, residue_mask = get_shortest_distances(
-        atom_pos=xyz,
-        atom_pos_mask=atom_mask,
-        atom_to_res_idx=atom_to_res_idx,
-        min_distance=min_distance,
-        max_distance=max_distance,
-    )
+    if atom_to_res_idx.size == 0 or chem_comp_ids.size == 0:
+        return {}
 
-    # exclude too close
-    if seq_ids.shape[0] == residue_mask.shape[0]:
-        seq_i = seq_ids[:, None]
-        seq_j = seq_ids[None, :]
-        chain_i = res_to_chain[:, None]
-        chain_j = res_to_chain[None, :]
-        close_mask = (
+    # Residues that have at least one valid atom
+    residue_exists = np.zeros((int(atom_to_res_idx.max().item()) + 1,), dtype=bool)
+    valid_res_idx = atom_to_res_idx[atom_mask]
+    residue_exists[valid_res_idx] = True
+
+    # Build neighbor list once; counts beyond n_max not needed
+    L = xyz.shape[0]
+    n_max = min(2048, max(1, L - 1))
+    nbrs, _ = neighbor_list_grid(
+        xyz,
+        d_thr=max_distance,
+        n_max=n_max,
+    )  # (L, n_max), -1 padded
+
+    valid_nbr = nbrs != -1
+    if not np.any(valid_nbr):
+        return {}
+
+    row_idx = np.broadcast_to(
+        np.arange(L, dtype=np.int64)[:, None],
+        nbrs.shape,
+    )[valid_nbr]
+    col_idx = nbrs[valid_nbr]
+
+    # Keep pairs where both atoms are valid and belong to different residues that exist
+    valid_pair = atom_mask[row_idx] & atom_mask[col_idx]
+    if not np.any(valid_pair):
+        return {}
+
+    row_idx = row_idx[valid_pair]
+    col_idx = col_idx[valid_pair]
+
+    ri = atom_to_res_idx[row_idx]
+    rj = atom_to_res_idx[col_idx]
+
+    valid_pair = (ri != rj) & residue_exists[ri] & residue_exists[rj]
+    if not np.any(valid_pair):
+        return {}
+
+    ri = ri[valid_pair]
+    rj = rj[valid_pair]
+    row_idx = row_idx[valid_pair]
+    col_idx = col_idx[valid_pair]
+
+    # Sequence separation filter for pairs within the same chain
+    if seq_ids.shape[0] == residue_exists.shape[0]:
+        seq_i = seq_ids[ri]
+        seq_j = seq_ids[rj]
+        chain_i = res_to_chain[ri]
+        chain_j = res_to_chain[rj]
+        too_close = (
             (chain_i == chain_j)
             & np.isfinite(seq_i)
             & np.isfinite(seq_j)
             & (np.abs(seq_i - seq_j) < seq_sep)
         )
-        residue_mask = residue_mask & ~close_mask
+        if np.any(too_close):
+            keep = ~too_close
+            ri = ri[keep]
+            rj = rj[keep]
+            row_idx = row_idx[keep]
+            col_idx = col_idx[keep]
 
-    if residue_dists.size == 0 or chem_comp_ids.size == 0:
+    if ri.size == 0 or chem_comp_ids.size == 0:
         return {}
 
-    n_res = residue_dists.shape[0]
-    tri_mask = np.triu(np.ones((n_res, n_res), dtype=bool), k=1)
-    valid_mask = tri_mask & residue_mask
-    if not np.any(valid_mask):
+    dvec = xyz[row_idx] - xyz[col_idx]
+    distances = np.sqrt(np.einsum("ij,ij->i", dvec, dvec))
+    distances = np.clip(distances, min_distance, max_distance)
+
+    # Order residue indices so each pair appears once (ri < rj)
+    swap = rj < ri
+    ri_ord = np.where(swap, rj, ri)
+    rj_ord = np.where(swap, ri, rj)
+
+    if ri_ord.size == 0:
         return {}
 
-    ri_idx, rj_idx = np.nonzero(valid_mask)
-    distances = residue_dists[ri_idx, rj_idx]
-    if distances.size == 0:
-        return {}
+    order = np.lexsort((rj_ord, ri_ord))
+    ri_sorted = ri_ord[order]
+    rj_sorted = rj_ord[order]
+    dist_sorted = distances[order]
 
-    chem_i = chem_comp_ids[ri_idx]
-    chem_j = chem_comp_ids[rj_idx]
-    pair_labels = np.sort(
-        np.stack([chem_i, chem_j], axis=1),
-        axis=1,
+    change = np.concatenate(
+        (
+            [True],
+            (ri_sorted[1:] != ri_sorted[:-1]) | (rj_sorted[1:] != rj_sorted[:-1]),
+        ),
     )
+    group_start = np.nonzero(change)[0]
+    if group_start.size == 0:
+        return {}
+
+    min_dist = np.minimum.reduceat(dist_sorted, group_start)
+    ri_grp = ri_sorted[group_start]
+    rj_grp = rj_sorted[group_start]
+
+    chem_i = chem_comp_ids[ri_grp]
+    chem_j = chem_comp_ids[rj_grp]
+    pair_labels = np.sort(np.stack([chem_i, chem_j], axis=1), axis=1)
     pair_keys = np.char.add(np.char.add(pair_labels[:, 0], "::"), pair_labels[:, 1])
 
     profile: dict[tuple[str, str], np.ndarray] = {}
@@ -397,7 +402,7 @@ def _residue_distance_profile(
         mask = inv == key_idx
         if not np.any(mask):
             continue
-        hist, _ = np.histogram(distances[mask], bins=bins)
+        hist, _ = np.histogram(min_dist[mask], bins=bins)
         chem_a, chem_b = str(key_str).split("::", maxsplit=1)
         profile[(chem_a, chem_b)] = hist.astype(np.int64)
     return profile

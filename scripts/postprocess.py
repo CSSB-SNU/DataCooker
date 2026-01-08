@@ -703,6 +703,10 @@ def distance_profile(
             profiles.append(results["residue_distance_profile"])
         pdb_profile = _mean_profiles(profiles, n_bins=len(bins) - 1)
         return pdb_id, pdb_profile
+    
+    # test
+    _process_pdb(key_list[0])
+    breakpoint()
 
     key_chunks = [key_list[i : i + chunk_size] for i in range(0, len(key_list), chunk_size)]
     click.echo(f"Dispatching {len(key_chunks)} chunks (chunk_size={chunk_size}) to joblib...")
