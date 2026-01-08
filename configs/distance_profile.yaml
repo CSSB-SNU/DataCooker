@@ -1,13 +1,19 @@
 #
 # Distance profile configuration
 #
-cif_db_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/cif_20210930_res9.lmdb}
-output_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/metadata/distance_profile_20210930_res9.npz}
+cif_db_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/cif_raw.lmdb}
+output_path: ${p:/home/psk6950/data/BioMolDBv2_2024Oct21/metadata/pdb_distance_profile.npz}
 
 # histogram parameters
 bin_width: 0.5
 min_distance: 2.0
 max_distance: 22.0
+
+# ignore close residues in same chain (|seq_i - seq_j| < seq_sep)
+seq_sep: 4
+
+# how many PDB IDs a worker processes per task
+chunk_size: 200
 
 # joblib parallelism (-1 uses all cores)
 njobs: -1

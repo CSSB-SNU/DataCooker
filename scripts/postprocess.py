@@ -11,7 +11,6 @@ from datacooker import Cooker, ParsingCache, RecipeBook
 from pipelines.cifmol import CIFMol, CIFMolAttached
 from pipelines.utils.convert import from_bytes
 from pipelines.utils.lmdb import extract_key_list
-from pipelines.instructions.distance_profile import get_shortest_distances
 
 
 def load_cif(key: str, env_path: Path) -> dict[str, CIFMol]:
@@ -244,43 +243,27 @@ def cifmol_meta_process(
     )
 
 
-def _residue_distance_profile(
-    cifmol: CIFMol,
-    bins: np.ndarray,
-    min_distance: float,
-    max_distance: float,
-) -> np.ndarray:
-    """Compute normalized residue–residue shortest-distance histogram for a CIFMol."""
-    xyz = np.asarray(cifmol.atoms.xyz.value, dtype=np.float32)
-    atom_mask = np.isfinite(xyz).all(axis=1)
-    if not np.any(atom_mask):
-        return np.zeros(len(bins) - 1, dtype=np.float32)
 
-    atom_to_res_idx = np.asarray(cifmol.index_table.atom_to_res, dtype=np.int64)
-    residue_dists, residue_mask = get_shortest_distances(
-        atom_pos=xyz,
-        atom_pos_mask=atom_mask,
-        atom_to_res_idx=atom_to_res_idx,
-        min_distance=min_distance,
-        max_distance=max_distance,
-    )
 
-    if residue_dists.size == 0:
-        return np.zeros(len(bins) - 1, dtype=np.float32)
+def _mean_profiles(
+    profiles: list[dict[tuple[str, str], np.ndarray]],
+    n_bins: int,
+) -> dict[tuple[str, str], np.ndarray]:
+    """Average counts across profiles, filling missing pairs with zeros."""
+    if len(profiles) == 0:
+        return {}
 
-    n_res = residue_dists.shape[0]
-    tri_mask = np.triu(np.ones((n_res, n_res), dtype=bool), k=1)
-    valid_mask = tri_mask & residue_mask
-    distances = residue_dists[valid_mask]
-    if distances.size == 0:
-        return np.zeros(len(bins) - 1, dtype=np.float32)
+    all_keys: set[tuple[str, str]] = set()
+    for p in profiles:
+        all_keys.update(p.keys())
 
-    hist, _ = np.histogram(distances, bins=bins)
-    hist = hist.astype(np.float32)
-    total = hist.sum()
-    if total > 0:
-        hist /= total
-    return hist
+    out: dict[tuple[str, str], np.ndarray] = {}
+    for key in all_keys:
+        stacked = []
+        for p in profiles:
+            stacked.append(p.get(key, np.zeros(n_bins, dtype=np.float32)))
+        out[key] = np.mean(np.stack(stacked, axis=0), axis=0, dtype=np.float32)
+    return out
 
 
 def _load_distance_profile_config(config_path: Path) -> dict:
@@ -290,6 +273,21 @@ def _load_distance_profile_config(config_path: Path) -> dict:
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     if not isinstance(cfg_dict, dict):
         msg = "Configuration file must contain a dictionary at the top level."
+        raise click.ClickException(msg)
+    required = {
+        "cif_db_path",
+        "output_path",
+        "bin_width",
+        "min_distance",
+        "max_distance",
+        "seq_sep",
+        "chunk_size",
+        "njobs",
+    }
+    missing = required - set(cfg_dict)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        msg = f"Missing required config keys: {missing_str}"
         raise click.ClickException(msg)
     return dict(cfg_dict)
 
@@ -654,38 +652,29 @@ def graph_lmdb_attached(
 
 
 @cli.command("distance_profile")
-@click.argument("cif_db_path", required=False, type=click.Path(path_type=Path))
-@click.argument("output_path", required=False, type=click.Path(path_type=Path))
-@click.option("--config", "-c", type=click.Path(path_type=Path), help="YAML config path. Overrides other args if provided.")
-@click.option("--bin-width", "-b", type=float, default=0.5, show_default=True)
-@click.option("--min-distance", type=float, default=2.0, show_default=True)
-@click.option("--max-distance", type=float, default=22.0, show_default=True)
-@click.option("--njobs", "-j", type=int, default=-1, show_default=True)
-def distance_profile(  # noqa: PLR0913
-    cif_db_path: Path | None,
-    output_path: Path | None,
-    config: Path | None,
-    bin_width: float,
-    min_distance: float,
-    max_distance: float,
-    njobs: int,
+@click.argument("config", type=click.Path(path_type=Path))
+def distance_profile(
+    config: Path,
 ) -> None:
-    """Compute residue-level distance profile averaged per PDB ID then globally."""
-    if config is not None:
-        cfg = _load_distance_profile_config(config)
-        cif_db_path = cfg.get("cif_db_path", cif_db_path)
-        output_path = cfg.get("output_path", output_path)
-        bin_width = float(cfg.get("bin_width", bin_width))
-        min_distance = float(cfg.get("min_distance", min_distance))
-        max_distance = float(cfg.get("max_distance", max_distance))
-        njobs = int(cfg.get("njobs", njobs))
+    """Compute chem-comp pair distance counts averaged per PDB ID then globally."""
+    cfg = _load_distance_profile_config(config)
 
-    if cif_db_path is None or output_path is None:
-        msg = "Provide cif_db_path and output_path either via args or config."
+    cif_db_path = Path(cfg["cif_db_path"])
+    output_path = Path(cfg["output_path"])
+    bin_width = float(cfg["bin_width"])
+    min_distance = float(cfg["min_distance"])
+    max_distance = float(cfg["max_distance"])
+    njobs = int(cfg["njobs"])
+    seq_sep = int(cfg["seq_sep"])
+    chunk_size = int(cfg["chunk_size"])
+
+    if chunk_size <= 0:
+        msg = "chunk_size must be positive."
         raise click.ClickException(msg)
 
-    cif_db_path = Path(cif_db_path)
-    output_path = Path(output_path)
+    from pipelines.recipe.distance_profile import RECIPE, TARGETS
+
+    recipe, targets = RECIPE, TARGETS
     key_list = extract_key_list(cif_db_path)
     click.echo(f"Computing distance profiles for {len(key_list)} CIF entries...")
 
@@ -696,47 +685,75 @@ def distance_profile(  # noqa: PLR0913
         msg = "Distance bins are invalid; check bin_width/min/max values."
         raise click.ClickException(msg)
 
-    def _process_pdb(pdb_id: str) -> tuple[str, np.ndarray]:
+    def _process_pdb(pdb_id: str) -> tuple[str, dict[tuple[str, str], np.ndarray]]:
         cifmol_dict = load_cif(pdb_id, env_path=cif_db_path)
-        profiles = [
-            _residue_distance_profile(
-                cifmol=obj["cifmol"],
-                bins=bins,
-                min_distance=min_distance,
-                max_distance=max_distance,
+        profiles = []
+        for obj in cifmol_dict.values():
+            results = base_process(
+                data_dict={
+                    "cifmol": obj["cifmol"],
+                    "bins": bins,
+                    "min_distance": min_distance,
+                    "max_distance": max_distance,
+                    "seq_sep": seq_sep,
+                },
+                recipe=recipe,
+                targets=targets,
             )
-            for obj in cifmol_dict.values()
-        ]
-        if len(profiles) == 0:
-            return pdb_id, np.zeros(len(bins) - 1, dtype=np.float32)
-        return pdb_id, np.mean(profiles, axis=0, dtype=np.float32)
+            profiles.append(results["residue_distance_profile"])
+        pdb_profile = _mean_profiles(profiles, n_bins=len(bins) - 1)
+        return pdb_id, pdb_profile
 
-    _process_pdb(key_list[0])
-    breakpoint()
+    key_chunks = [key_list[i : i + chunk_size] for i in range(0, len(key_list), chunk_size)]
+    click.echo(f"Dispatching {len(key_chunks)} chunks (chunk_size={chunk_size}) to joblib...")
 
-    results = Parallel(n_jobs=njobs, verbose=10)(
-        delayed(_process_pdb)(key) for key in key_list
+    def _process_chunk(keys: list[str]) -> list[tuple[str, dict[tuple[str, str], np.ndarray]]]:
+        return [_process_pdb(k) for k in keys]
+
+    chunk_results = Parallel(n_jobs=njobs, verbose=10)(
+        delayed(_process_chunk)(chunk) for chunk in key_chunks
     )
+    click.echo("Merging chunk results...")
+    results = [item for chunk in chunk_results for item in chunk]
 
     if len(results) == 0:
         msg = "No profiles were computed."
         raise click.ClickException(msg)
 
     pdb_ids, pdb_profiles = zip(*results)
-    pdb_profiles_array = np.vstack(pdb_profiles)
-    global_profile = np.mean(pdb_profiles_array, axis=0, dtype=np.float32)
+
+    all_keys: set[tuple[str, str]] = set()
+    for p in pdb_profiles:
+        all_keys.update(p.keys())
+
+    click.echo(f"Computing global profile for {len(all_keys)} chem-comp pairs...")
+
+    n_bins = len(bins) - 1
+    zero = np.zeros(n_bins, dtype=np.float32)
+    global_profile: dict[tuple[str, str], np.ndarray] = {}
+    for key in all_keys:
+        stacked = [p.get(key, zero) for p in pdb_profiles]
+        global_profile[key] = np.sum(np.stack(stacked, axis=0), axis=0, dtype=np.float32)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    global_keys = np.array(list(global_profile.keys()), dtype=object)
+    global_values = (
+        np.stack([global_profile[k] for k in global_keys], axis=0)
+        if len(global_keys) > 0
+        else np.zeros((0, len(bins) - 1), dtype=np.float32)
+    )
+
     np.savez_compressed(
         output_path,
         bins=bins,
         pdb_ids=np.array(pdb_ids),
-        pdb_profiles=pdb_profiles_array,
-        global_profile=global_profile,
+        pdb_profiles=np.array(pdb_profiles, dtype=object),
+        global_keys=global_keys,
+        global_values=global_values,
     )
 
-    click.echo(f"Saved profiles to {output_path}")
-    click.echo(f"Global profile sum={global_profile.sum():.3f}")
+    click.echo(f"Saved CCD distance counts to {output_path}")
+    click.echo(f"Global profile pairs={len(global_keys)}; bins={len(bins)-1}")
 
 
 @cli.command("extract_edge")

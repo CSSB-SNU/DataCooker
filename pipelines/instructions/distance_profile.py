@@ -1,7 +1,9 @@
 
+from collections.abc import Callable
+
 import numpy as np
 from numpy import ndarray
-
+from pipelines.cifmol import CIFMol
 
 def neighbor_list_grid(  # noqa: PLR0915
     xyz: np.ndarray,
@@ -309,3 +311,114 @@ def get_shortest_distances(
     residue_dists = out.reshape(R_max, R_max)
 
     return residue_dists, residue_mask
+
+def _residue_distance_profile(
+    cifmol: CIFMol,
+    bins: np.ndarray,
+    min_distance: float,
+    max_distance: float,
+    seq_sep: int,
+) -> dict[tuple[str, str], np.ndarray]:
+    """
+    Compute residue–residue shortest-distance counts per chem_comp_id pair for a CIFMol.
+
+    Returns
+    -------
+    dict
+        {(chem_a, chem_b): counts ndarray}, where chem_a <= chem_b lexicographically.
+    """
+    xyz = np.asarray(cifmol.atoms.xyz.value, dtype=np.float32)
+    atom_mask = np.isfinite(xyz).all(axis=1)
+    if not np.any(atom_mask):
+        return {}
+
+    atom_to_res_idx = np.asarray(cifmol.index_table.atom_to_res, dtype=np.int64)
+    res_to_chain = np.asarray(cifmol.index_table.res_to_chain, dtype=np.int64)
+    chem_comp_ids = np.asarray(cifmol.residues.chem_comp_id.value, dtype=str)
+
+    def _to_numeric_seq_ids(raw_seq_ids: np.ndarray) -> np.ndarray:
+        seq_ids = np.full(raw_seq_ids.shape, np.nan, dtype=np.float64)
+        for idx, val in enumerate(raw_seq_ids):
+            try:
+                seq_ids[idx] = float(val)
+            except (TypeError, ValueError):
+                continue
+        return seq_ids
+
+    seq_ids = _to_numeric_seq_ids(np.asarray(cifmol.residues.cif_idx.value))
+
+    residue_dists, residue_mask = get_shortest_distances(
+        atom_pos=xyz,
+        atom_pos_mask=atom_mask,
+        atom_to_res_idx=atom_to_res_idx,
+        min_distance=min_distance,
+        max_distance=max_distance,
+    )
+
+    # exclude too close
+    if seq_ids.shape[0] == residue_mask.shape[0]:
+        seq_i = seq_ids[:, None]
+        seq_j = seq_ids[None, :]
+        chain_i = res_to_chain[:, None]
+        chain_j = res_to_chain[None, :]
+        close_mask = (
+            (chain_i == chain_j)
+            & np.isfinite(seq_i)
+            & np.isfinite(seq_j)
+            & (np.abs(seq_i - seq_j) < seq_sep)
+        )
+        residue_mask = residue_mask & ~close_mask
+
+    if residue_dists.size == 0 or chem_comp_ids.size == 0:
+        return {}
+
+    n_res = residue_dists.shape[0]
+    tri_mask = np.triu(np.ones((n_res, n_res), dtype=bool), k=1)
+    valid_mask = tri_mask & residue_mask
+    if not np.any(valid_mask):
+        return {}
+
+    ri_idx, rj_idx = np.nonzero(valid_mask)
+    distances = residue_dists[ri_idx, rj_idx]
+    if distances.size == 0:
+        return {}
+
+    chem_i = chem_comp_ids[ri_idx]
+    chem_j = chem_comp_ids[rj_idx]
+    pair_labels = np.sort(
+        np.stack([chem_i, chem_j], axis=1),
+        axis=1,
+    )
+    pair_keys = np.char.add(np.char.add(pair_labels[:, 0], "::"), pair_labels[:, 1])
+
+    profile: dict[tuple[str, str], np.ndarray] = {}
+    uniq_keys, inv = np.unique(pair_keys, return_inverse=True)
+    for key_idx, key_str in enumerate(uniq_keys):
+        mask = inv == key_idx
+        if not np.any(mask):
+            continue
+        hist, _ = np.histogram(distances[mask], bins=bins)
+        chem_a, chem_b = str(key_str).split("::", maxsplit=1)
+        profile[(chem_a, chem_b)] = hist.astype(np.int64)
+    return profile
+
+
+def residue_distance_profile() -> Callable[..., dict[tuple[str, str], np.ndarray]]:
+    """Instruction wrapper for residue–residue distance histograms per CIFMol."""
+
+    def _worker(
+        cifmol: CIFMol,
+        bins: np.ndarray,
+        min_distance: float,
+        max_distance: float,
+        seq_sep: int,
+    ) -> dict[tuple[str, str], np.ndarray]:
+        return _residue_distance_profile(
+            cifmol=cifmol,
+            bins=bins,
+            min_distance=min_distance,
+            max_distance=max_distance,
+            seq_sep=seq_sep,
+        )
+
+    return _worker
