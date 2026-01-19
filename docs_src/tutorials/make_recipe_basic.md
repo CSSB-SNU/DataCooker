@@ -7,7 +7,7 @@ The practice for this tutorial is the easiest parsing pipeline - parse CCD for m
 
 Before coding, visualize the transformation from raw files to structured objects. Identify how to split complex data into meaningful units and how to recombine them.
 
-![CCD Flow Diagram](assets/ccd_datacooker.drawio.png)
+![CCD Flow Diagram](../assets/ccd_datacooker.drawio.png)
 
 * **Input**: `cif_raw_dict` (e.g., raw MMCIF data loaded from a file).
 * **Intermediates**: Data separated into specific categories like components, atoms, and bonds (e.g., `_chem_comp_dict`).
