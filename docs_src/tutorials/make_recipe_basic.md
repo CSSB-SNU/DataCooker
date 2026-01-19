@@ -3,9 +3,9 @@
 Let's practice how to make recipe for your own data object/file.
 The practice for this tutorial is the easiest parsing pipeline - parse CCD for making organized CCD data dictionary.
 
-## 1. Conceptualizing the Data Flow (Thinking in Flow)
+## 1. Conceptualizing the Data Flow
 
-Before coding, visualize the transformation from raw files to structured objects. Identify how to split complex data into meaningful units and how to recombine them.
+Before coding, visualize the entire process in your mind - from raw inputs to the final deliverable, including every step in between.
 
 ![CCD Flow Diagram](../assets/ccd_datacooker.drawio.png)
 
@@ -76,7 +76,8 @@ ccd_recipe.add(
         },
         "params": {"remove_hydrogen": True, "unwrap": True},
     },
-)```
+)
+```
 
 ## 3. Implementing Custom Instructions
 An Instruction is any Callable that accepts kwargs and params as arguments. Below are examples based on instructions used in the CCD parsing workflow.
@@ -130,6 +131,4 @@ def get_smaller_dict(*, dtype: type):
 ```
 
 While simple recipes like parse_CCD may not strictly necessitate higher-order functions that return specialized callables based on input arguments, this pattern is documented here for scalability in complex workflows. This approach leverages closures to achieve partial application, 'baking' specific configuration state into the returned function to determine its behavior at runtime."
-```
-```
 
