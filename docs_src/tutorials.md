@@ -16,4 +16,7 @@ Pipeline tutorials live here. Each recipe under `pipelines/recipe/` has its own 
 - [Sequence clustering](tutorials/seq_cluster.md): split FASTA, cluster proteins/antibodies, and write cluster maps.
 - [Train/valid graph split](tutorials/train_valid_graph_split.md): build graphs, split train/valid edges, and compute stats.
 
+## Practice: make your own pipeline
+- [Level0 tutorials](tutorials/make_recipe_basic.md): practice basic example - parsing CCD
+
 Use these in order or jump to the pipeline you need. All pages share the same format (purpose, inputs, outputs, steps, usage) for consistency.
