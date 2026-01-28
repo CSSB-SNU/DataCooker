@@ -215,7 +215,21 @@ class ProjectFunc(Protocol):
         ...
 
 
-def parse(
+def run_recipe(
+    recipe_path: Path,
+    datadict: dict[str, Any],
+    transform_func: TransformFunc | None = None,
+    targets: list[str] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Run a recipe on a given data dict."""
+    parse_cache = ParsingCache(transform_func)
+    cooker = Cooker(parse_cache=parse_cache, recipebook=str(recipe_path))
+    cooker.prep(datadict, fields=list(datadict.keys()))
+    cooker.cook()
+    return cooker.serve(targets=targets)
+
+
+def parse_file(
     recipe_path: Path,
     file_path: Path,
     load_func: LoadFunc,  # datadict = load_func(file_path)
@@ -223,28 +237,31 @@ def parse(
     targets: list[str] | None = None,
     **extra_kwargs: Mapping[str, Any],
 ) -> dict:
-    """Parse a CIF file using a predefined recipe."""
+    """Parse a file using a predefined recipe."""
     datadict = load_func(file_path)
     datadict.update(extra_kwargs)
-    parse_cache = ParsingCache(transform_func)
-    cooker = Cooker(parse_cache=parse_cache, recipebook=str(recipe_path))
-    cooker.prep(datadict, fields=list(datadict.keys()))
-    cooker.cook()
-    results, targets = cooker.serve(targets=targets)
+    results, _targets = run_recipe(
+        recipe_path,
+        datadict,
+        transform_func=transform_func,
+        targets=targets,
+    )
     return results
 
 
-def rebuild(
+def parse_dict(
     recipe_path: Path,
     datadict: dict[str, Any],
     transform_func: TransformFunc | None = None,
     targets: list[str] | None = None,
     **extra_kwargs: Mapping[str, Any],
 ) -> dict:
-    """Parse a CIF file using a predefined recipe."""
+    """Parse a dict already loaded using a predefined recipe."""
     datadict.update(extra_kwargs)
-    parse_cache = ParsingCache(transform_func)
-    cooker = Cooker(parse_cache=parse_cache, recipebook=str(recipe_path))
-    cooker.prep(datadict, fields=list(datadict.keys()))
-    cooker.cook()
-    return cooker.serve(targets=targets)[0]
+    results, _targets = run_recipe(
+        recipe_path,
+        datadict,
+        transform_func=transform_func,
+        targets=targets,
+    )
+    return results
