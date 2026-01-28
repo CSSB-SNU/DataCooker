@@ -16,7 +16,7 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 from .cache import ParsingCache
-from .core import ConvertFunc, Cooker, LoadFunc, TransformFunc, parse, rebuild
+from .core import ConvertFunc, Cooker, LoadFunc, TransformFunc, parse_dict, parse_file
 from .recipe import RecipeBook
 
 __all__ = [
@@ -27,6 +27,6 @@ __all__ = [
     "RecipeBook",
     "TransformFunc",
     "__version__",
-    "parse",
-    "rebuild",
+    "parse_dict",
+    "parse_file",
 ]
