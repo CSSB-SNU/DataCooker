@@ -197,7 +197,7 @@ class TransformFunc(Protocol):
 class ConvertFunc(Protocol):
     """Protocol for data conversion functions."""
 
-    def __call__(self, data: dict[str, Any]) -> dict[str, Any]:
+    def __call__(self, data: dict[str, Any], output_path: Path) -> dict[str, Any]:
         """Convert input data dict into another data dict."""
         ...
 
