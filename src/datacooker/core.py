@@ -197,7 +197,7 @@ class TransformFunc(Protocol):
 class ConvertFunc(Protocol):
     """Protocol for data conversion functions."""
 
-    def __call__(self, data: dict[str, Any], output_path: Path) -> dict[str, Any]:
+    def __call__(self, data: dict[str, Any]) -> dict[str, Any]:
         """Convert input data dict into another data dict."""
         ...
 
@@ -210,7 +210,7 @@ class ProjectFunc(Protocol):
     side effects such as writing to storage, indexing, or emitting results.
     """
 
-    def __call__(self, data: dict[str, Any]) -> None:
+    def __call__(self, data: dict[str, Any], output_path: Path) -> None:
         """Consume a processed data dict and project it to an external system."""
         ...
 
