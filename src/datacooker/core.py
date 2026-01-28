@@ -2,7 +2,7 @@ import fnmatch
 import importlib.util
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Protocol, get_args, overload
+from typing import Any, Protocol, get_args, overload, runtime_checkable
 
 from .cache import ParsingCache
 from .recipe import RecipeBook
@@ -202,6 +202,7 @@ class ConvertFunc(Protocol):
         ...
 
 
+@runtime_checkable
 class ProjectFunc(Protocol):
     """Protocol for data projection / sink functions.
 
