@@ -202,6 +202,18 @@ class ConvertFunc(Protocol):
         ...
 
 
+class ProjectFunc(Protocol):
+    """Protocol for data projection / sink functions.
+
+    A ProjectFunc consumes a processed data dictionary and performs
+    side effects such as writing to storage, indexing, or emitting results.
+    """
+
+    def __call__(self, data: dict[str, Any]) -> None:
+        """Consume a processed data dict and project it to an external system."""
+        ...
+
+
 def parse(
     recipe_path: Path,
     file_path: Path,
