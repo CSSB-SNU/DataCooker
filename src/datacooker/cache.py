@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Any, Callable
+    from collections.abc import Callable, Iterator, Sequence
 
 
 class ParsingCache:
@@ -18,7 +18,7 @@ class ParsingCache:
 
     def __init__(
         self,
-        key_transform: Callable[[str], tuple[str, ...]] | None = None,
+        key_transform: Callable[[str], Sequence[str]] | None = None,
     ) -> None:
         self._storage: dict[str, Any] = {}
         if key_transform is None:
@@ -75,3 +75,7 @@ class ParsingCache:
 
         _collect(self._storage)
         return result
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over all keys in the cache."""
+        return iter(self.keys())

@@ -72,3 +72,6 @@ allow-direct-references = true
 packages = [
   "src/datacooker",
 ]
+
+[tool.pyright]
+enableReachabilityAnalysis = false

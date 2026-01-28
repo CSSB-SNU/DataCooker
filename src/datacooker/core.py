@@ -18,11 +18,26 @@ class Cooker:
     """
 
     @overload
-    def __init__(self, parse_cache: ParsingCache, recipebook: RecipeBook, targets: list[str] | None = None) -> None: ...
+    def __init__(
+        self,
+        parse_cache: ParsingCache,
+        recipebook: RecipeBook,
+        targets: list[str] | None = None,
+    ) -> None: ...
     @overload
-    def __init__(self, parse_cache: ParsingCache, recipebook: str, targets: list[str] | None = None) -> None: ...
+    def __init__(
+        self,
+        parse_cache: ParsingCache,
+        recipebook: str,
+        targets: list[str] | None = None,
+    ) -> None: ...
 
-    def __init__(self, parse_cache: ParsingCache, recipebook: RecipeBook | str, targets: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        parse_cache: ParsingCache,
+        recipebook: RecipeBook | str,
+        targets: list[str] | None = None,
+    ) -> None:
         self.parse_cache = parse_cache
         if isinstance(recipebook, str):
             self.recipebook, self.targets = self._load_recipe(recipebook)
@@ -32,7 +47,7 @@ class Cooker:
     def _load_recipe(
         self,
         recipebook_strpath: str,
-    ) -> tuple[RecipeBook, list[str] | str | None]:
+    ) -> tuple[RecipeBook, list[str] | None]:
         """Dynamically load a RecipeBook from a given path."""
         recipebook_path = Path(recipebook_strpath).resolve()
         if not recipebook_path.exists():
@@ -143,13 +158,17 @@ class Cooker:
             if target.name not in self.parse_cache:
                 resolve(target.name, target.type)
 
-    def serve(self, targets: list[str] | str | None = None) -> dict[str, Any]:
+    def serve(
+        self,
+        targets: list[str] | None = None,
+    ) -> tuple[dict[str, Any], list[str]]:
         """Retrieve computed targets."""
         results = {}
         if targets is None:
+            if self.targets is None:
+                msg = "No targets specified for serving."
+                raise ValueError(msg)
             targets = self.targets
-        if isinstance(targets, str):
-            return self.parse_cache[targets]
         for out in targets:
             if out in self.parse_cache:
                 results[out] = self.parse_cache[out]
@@ -158,12 +177,14 @@ class Cooker:
                 raise KeyError(msg)
         return results, targets
 
+
 class LoadFunc(Protocol):
     """Protocol for data loading functions."""
 
     def __call__(self, file_path: Path) -> dict[str, Any]:
         """Load a file and return a dict-like data structure."""
         ...
+
 
 class TransformFunc(Protocol):
     """Protocol for data transformation functions."""
@@ -172,6 +193,7 @@ class TransformFunc(Protocol):
         """Transform a key string into a list of keys."""
         ...
 
+
 class ConvertFunc(Protocol):
     """Protocol for data conversion functions."""
 
@@ -179,10 +201,11 @@ class ConvertFunc(Protocol):
         """Convert input data dict into another data dict."""
         ...
 
+
 def parse(
     recipe_path: Path,
     file_path: Path,
-    load_func: LoadFunc, # datadict = load_func(file_path)
+    load_func: LoadFunc,  # datadict = load_func(file_path)
     transform_func: TransformFunc | None = None,
     targets: list[str] | None = None,
     **extra_kwargs: Mapping[str, Any],
@@ -197,6 +220,7 @@ def parse(
     results, targets = cooker.serve(targets=targets)
     return results
 
+
 def rebuild(
     recipe_path: Path,
     datadict: dict[str, Any],
@@ -210,4 +234,4 @@ def rebuild(
     cooker = Cooker(parse_cache=parse_cache, recipebook=str(recipe_path))
     cooker.prep(datadict, fields=list(datadict.keys()))
     cooker.cook()
-    return cooker.serve(targets=targets)
+    return cooker.serve(targets=targets)[0]

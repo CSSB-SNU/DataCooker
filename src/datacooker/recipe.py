@@ -100,9 +100,9 @@ class RecipeBook:
 
     def add(
         self,
-        targets: Any,
+        targets: RawVariableSet | list[RawVariableSet],
         instruction: Callable,
-        inputs: Any,
+        inputs: dict[str, Any] | list[dict[str, Any]],
     ) -> "RecipeBook":
         """Add a new step to the recipe."""
         if isinstance(targets, list) and isinstance(inputs, list):
@@ -116,6 +116,12 @@ class RecipeBook:
                 self._single_add(targetset, instruction, input_bundle)
 
         else:
+            if isinstance(targets, list) or isinstance(inputs, list):
+                msg = (
+                    "When providing a list of targets, inputs must also be a list, "
+                    "and vice versa."
+                )
+                raise TypeError(msg)
             self._single_add(targets, instruction, inputs)
 
         return self
