@@ -232,13 +232,19 @@ def run_recipe(
 def parse_file(
     recipe_path: Path,
     file_path: Path,
-    load_func: LoadFunc,  # datadict = load_func(file_path)
+    load_func: LoadFunc | None,  # datadict = load_func(file_path)
+    datadict: dict[str, Any] | None = None,  # for additional inputs to the recipe
     transform_func: TransformFunc | None = None,
     targets: list[str] | None = None,
     **extra_kwargs: Mapping[str, Any],
 ) -> dict:
     """Parse a file using a predefined recipe."""
-    datadict = load_func(file_path)
+    if datadict is None:
+        datadict = {}
+    if load_func is not None:
+        datadict.update(load_func(file_path))
+    else:
+        datadict["file_path"] = file_path
     datadict.update(extra_kwargs)
     results, _targets = run_recipe(
         recipe_path,
