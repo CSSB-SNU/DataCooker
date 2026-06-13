@@ -42,11 +42,16 @@ from .errors import (
 from .recipe import Inputs, Recipe, RecipeBook, RecipeError, Variable, variable
 from .utils.db import (
     build_lmdb,
+    count_lmdb_entries,
     extract_lmdb_keys,
     merge_lmdb_shards,
+    read_all_lmdb_raw,
     read_lmdb,
+    read_lmdb_raw,
     rebuild_lmdb,
 )
+from .utils.importing import resolve_object
+from .utils.paths import scan_paths
 from .utils.sharding import resolve_node_config, shard_items
 
 __all__ = [
@@ -74,6 +79,7 @@ __all__ = [
     "Variable",
     "__version__",
     "build_lmdb",
+    "count_lmdb_entries",
     "describe",
     "execute",
     "extract_lmdb_keys",
@@ -82,10 +88,14 @@ __all__ = [
     "parse",
     "parse_dict",
     "parse_file",
+    "read_all_lmdb_raw",
     "read_lmdb",
+    "read_lmdb_raw",
     "rebuild",
     "rebuild_lmdb",
     "resolve_node_config",
+    "resolve_object",
+    "scan_paths",
     "shard_items",
     "variable",
     "visualize",

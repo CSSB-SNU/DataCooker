@@ -9,10 +9,15 @@ from pathlib import Path
 
 from datacooker import (
     build_lmdb,
+    count_lmdb_entries,
     extract_lmdb_keys,
+    read_all_lmdb_raw,
     read_lmdb,
+    read_lmdb_raw,
     rebuild_lmdb,
     resolve_node_config,
+    resolve_object,
+    scan_paths,
     shard_items,
 )
 
@@ -70,6 +75,15 @@ class DataCookerUtilsTests(unittest.TestCase):
             )
 
             self.assertEqual(sorted(extract_lmdb_keys(env_path)), ["a", "b"])
+            self.assertEqual(count_lmdb_entries(env_path), 2)
+            self.assertEqual(read_lmdb_raw(env_path, "a"), _serialize({"double": 4}))
+            self.assertEqual(
+                read_all_lmdb_raw(env_path),
+                {
+                    "a": _serialize({"double": 4}),
+                    "b": _serialize({"double": 10}),
+                },
+            )
             self.assertEqual(
                 read_lmdb(env_path, "a", deserialize=_deserialize),
                 {"double": 4},
@@ -143,3 +157,20 @@ class DataCookerUtilsTests(unittest.TestCase):
     def test_sharding_helpers(self) -> None:
         self.assertEqual(resolve_node_config(node_rank=1, node_count=3), (1, 3))
         self.assertEqual(shard_items(list(range(8)), node_rank=1, node_count=3), [1, 4, 7])
+
+    def test_resolve_object(self) -> None:
+        self.assertIs(resolve_object("pathlib.Path"), Path)
+
+    def test_scan_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "a.txt").write_text("a")
+            nested = root / "nested"
+            nested.mkdir()
+            (nested / "b.txt").write_text("b")
+            (nested / "c.csv").write_text("c")
+
+            self.assertEqual(
+                sorted(path.relative_to(root).as_posix() for path in scan_paths(root, pattern="*.txt")),
+                ["a.txt", "nested/b.txt"],
+            )

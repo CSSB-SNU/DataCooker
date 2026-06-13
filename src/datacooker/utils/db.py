@@ -20,7 +20,7 @@ from datacooker.protocols import (
 
 logger = logging.getLogger(__name__)
 
-_ENV_CACHE: dict[tuple[str, bool], Any] = {}
+_ENV_CACHE: dict[tuple[str, bool, bool], Any] = {}
 
 
 def _get_env(
@@ -30,7 +30,7 @@ def _get_env(
     lock: bool,
 ) -> Any:
     lmdb_module = _require_lmdb()
-    key = (str(path), readonly)
+    key = (str(path), readonly, lock)
     env = _ENV_CACHE.get(key)
     if env is None:
         env = lmdb_module.open(str(path), readonly=readonly, lock=lock)
@@ -54,6 +54,38 @@ def extract_lmdb_keys(env_path: Path) -> list[str]:
         env.close()
 
 
+def count_lmdb_entries(env_path: Path) -> int:
+    """Count entries in an LMDB database."""
+    lmdb_module = _require_lmdb()
+    if not env_path.exists():
+        return 0
+
+    env = lmdb_module.open(str(env_path), readonly=True, lock=False)
+    try:
+        with env.begin() as txn:
+            return sum(1 for _ in txn.cursor())
+    finally:
+        env.close()
+
+
+def read_lmdb_raw(env_path: Path, key: str) -> bytes | None:
+    """Read a raw LMDB payload without applying deserialization."""
+    env = _get_env(env_path, readonly=True, lock=False)
+    with env.begin(buffers=True) as txn:
+        value = txn.get(key.encode())
+    return None if value is None else bytes(value)
+
+
+def read_all_lmdb_raw(env_path: Path) -> dict[str, bytes]:
+    """Read every raw entry from an LMDB database."""
+    env = _get_env(env_path, readonly=True, lock=False)
+    data: dict[str, bytes] = {}
+    with env.begin(buffers=True) as txn:
+        for key, value in txn.cursor():
+            data[bytes(key).decode()] = bytes(value)
+    return data
+
+
 def read_lmdb(
     env_path: Path,
     key: str,
@@ -61,14 +93,11 @@ def read_lmdb(
     deserialize: DeserializeFunc,
 ) -> dict[str, Any]:
     """Read a decoded entry from an LMDB database."""
-    env = _get_env(env_path, readonly=True, lock=False)
-    with env.begin() as txn:
-        value = txn.get(key.encode())
-
+    value = read_lmdb_raw(env_path, key)
     if value is None:
         msg = f"Key '{key}' not found in LMDB database at '{env_path}'."
         raise KeyError(msg)
-    return deserialize(bytes(value))
+    return deserialize(value)
 
 
 def build_lmdb(

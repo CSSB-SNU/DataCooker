@@ -15,6 +15,7 @@ This repository intentionally keeps only reusable workflow primitives:
 - `describe()` for workflow introspection and debugging
 - `visualize()` for Mermaid and Graphviz graph rendering
 - `datacooker.utils.db` for recipe-driven LMDB build/rebuild/read flows
+- `datacooker.utils.paths` and `datacooker.utils.importing` for downstream glue code
 
 Domain-specific pipelines, IO loaders, model calls, and data products are
 expected to live in downstream repositories.
@@ -134,9 +135,11 @@ They cover:
 
 - building an LMDB from raw files plus a recipe
 - rebuilding an LMDB through another recipe
+- reading raw byte entries
 - reading decoded entries
 - merging shard databases
 - listing keys
+- counting entries
 
 Serialization stays downstream-specific through callbacks, so domain projects
 can keep their own byte format while reusing the workflow orchestration layer.
@@ -172,6 +175,8 @@ result = parse_dict(Path("my_recipe.py"), {"a": 1, "b": 2})
 - `load_recipe`: load `RECIPE` / `TARGETS` from a module path
 - `ExecutionContext`: runtime key-value store
 - `datacooker.utils.db`: generic LMDB workflow helpers
+- `datacooker.utils.importing`: dotted object resolution helpers
+- `datacooker.utils.paths`: recursive file discovery helpers
 - `datacooker.utils.sharding`: node-rank aware sharding helpers
 - `Variable`, `Inputs`, `Recipe`, `variable`: typed declaration helpers
 - `MissingDependencyError`, `StepExecutionError`, `InstructionOutputError`: structured runtime diagnostics

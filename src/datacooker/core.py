@@ -14,11 +14,16 @@ from .protocols import (
 )
 from .utils.db import (
     build_lmdb,
+    count_lmdb_entries,
     extract_lmdb_keys,
     merge_lmdb_shards,
+    read_all_lmdb_raw,
     read_lmdb,
+    read_lmdb_raw,
     rebuild_lmdb,
 )
+from .utils.importing import resolve_object
+from .utils.paths import scan_paths
 from .utils.sharding import resolve_node_config, shard_items
 
 __all__ = [
@@ -29,6 +34,7 @@ __all__ = [
     "SerializeFunc",
     "TransformFunc",
     "build_lmdb",
+    "count_lmdb_entries",
     "describe",
     "execute",
     "extract_lmdb_keys",
@@ -37,10 +43,14 @@ __all__ = [
     "parse",
     "parse_dict",
     "parse_file",
+    "read_all_lmdb_raw",
     "read_lmdb",
+    "read_lmdb_raw",
     "rebuild",
     "rebuild_lmdb",
     "resolve_node_config",
+    "resolve_object",
+    "scan_paths",
     "shard_items",
     "visualize",
 ]
