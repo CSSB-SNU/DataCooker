@@ -10,6 +10,7 @@ except PackageNotFoundError:
     __version__ = "unknown"
 
 from .api import (
+    describe,
     execute,
     parse,
     parse_dict,
@@ -33,7 +34,7 @@ from .errors import (
     MissingTargetError,
     UnknownTargetError,
 )
-from .recipe import RecipeBook
+from .recipe import Inputs, Recipe, RecipeBook, RecipeError, Variable, variable
 
 __all__ = [
     "ConvertFunc",
@@ -42,19 +43,25 @@ __all__ = [
     "DataCookerError",
     "DuplicateTargetError",
     "ExecutionContext",
+    "Inputs",
     "InvalidRecipeError",
     "LoadFunc",
     "MissingDependencyError",
     "MissingTargetError",
     "ParsingCache",
+    "Recipe",
     "RecipeBook",
+    "RecipeError",
     "TransformFunc",
     "UnknownTargetError",
+    "Variable",
     "__version__",
+    "describe",
     "execute",
     "load_recipe",
     "parse",
     "parse_dict",
     "parse_file",
     "rebuild",
+    "variable",
 ]

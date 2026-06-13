@@ -10,17 +10,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from datacooker import (
     CycleError,
+    Inputs,
     MissingDependencyError,
+    Recipe,
     RecipeBook,
     UnknownTargetError,
+    Variable,
+    describe,
     execute,
     load_recipe,
     parse_dict,
     parse_file,
+    variable,
 )
 
 
 class DataCookerCoreTests(unittest.TestCase):
+    def test_step_api_supports_clearer_declarations(self) -> None:
+        recipe = RecipeBook().step(
+            outputs=variable("sum", int),
+            instruction=lambda a, b: a + b,
+            args=[variable("a", int), variable("b", int)],
+        )
+
+        result = execute(recipe, {"a": 2, "b": 5})
+
+        self.assertEqual(result, {"sum": 7})
+
     def test_execute_returns_dict_for_single_target(self) -> None:
         recipe = RecipeBook().add(
             (("sum", int),),
@@ -86,14 +102,13 @@ class DataCookerCoreTests(unittest.TestCase):
     def test_recipe_file_uses_default_targets(self) -> None:
         recipe_module = textwrap.dedent(
             """
-            from datacooker import RecipeBook
+            from datacooker import RecipeBook, variable
 
-            RECIPE = RecipeBook().add(
-                (("sum", int),),
-                lambda a, b: a + b,
-                {"args": (("a", int), ("b", int))},
-            )
-            TARGETS = ["sum"]
+            RECIPE = RecipeBook().step(
+                outputs=variable("sum", int),
+                instruction=lambda a, b: a + b,
+                args=[variable("a", int), variable("b", int)],
+            ).set_default_targets(["sum"])
             """
         )
 
@@ -173,6 +188,71 @@ class DataCookerCoreTests(unittest.TestCase):
 
         self.assertEqual(result, {"items": [1, 2]})
 
+    def test_recipebook_default_targets_apply_to_execute(self) -> None:
+        recipe = (
+            RecipeBook()
+            .step(
+                outputs=variable("sum", int),
+                instruction=lambda a, b: a + b,
+                args=[variable("a", int), variable("b", int)],
+            )
+            .step(
+                outputs=variable("label", str),
+                instruction=lambda total: f"sum={total}",
+                args=[variable("sum", int)],
+            )
+            .set_default_targets("label")
+        )
+
+        result = execute(recipe, {"a": 1, "b": 4})
+
+        self.assertEqual(result, {"label": "sum=5"})
+
+    def test_describe_includes_required_and_missing_inputs(self) -> None:
+        recipe = (
+            RecipeBook()
+            .step(
+                outputs=variable("sum", int),
+                instruction=lambda a, b: a + b,
+                args=[variable("a", int), variable("b", int)],
+            )
+            .step(
+                outputs=variable("label", str),
+                instruction=lambda total, prefix: f"{prefix}:{total}",
+                args=[variable("sum", int)],
+                kwargs={"prefix": variable("prefix", str)},
+            )
+        )
+
+        summary = describe(
+            recipe,
+            targets="label",
+            available_inputs={"a", "b"},
+        )
+
+        self.assertIn("Targets: label", summary)
+        self.assertIn("Required inputs: a, b, prefix", summary)
+        self.assertIn("Missing inputs: prefix", summary)
+        self.assertIn("1. sum <- a, b", summary)
+        self.assertIn("2. label <- sum, prefix=prefix", summary)
+
+    def test_execution_order_is_dependency_sorted(self) -> None:
+        recipe = RecipeBook()
+        recipe.step(
+            outputs=variable("sum", int),
+            instruction=lambda a, b: a + b,
+            args=[variable("a", int), variable("b", int)],
+        )
+        recipe.step(
+            outputs=(variable("double", int), variable("triple", int)),
+            instruction=lambda total: (total * 2, total * 3),
+            args=[variable("sum", int)],
+        )
+
+        order = recipe.execution_order(["double", "triple"])
+
+        self.assertEqual([step.target_names for step in order], [("sum",), ("double", "triple")])
+
     def test_recipe_validate_reports_required_inputs(self) -> None:
         recipe = RecipeBook()
         recipe.add(
@@ -187,6 +267,16 @@ class DataCookerCoreTests(unittest.TestCase):
         )
 
         self.assertEqual(recipe.required_inputs("label"), {"a", "b"})
+
+    def test_public_declaration_types_are_exported(self) -> None:
+        self.assertIsInstance(variable("value", int), Variable)
+        self.assertIsInstance(Inputs(), Inputs)
+        recipe = Recipe(
+            targets=(variable("out", int),),
+            instruction=lambda value: value,
+            inputs=Inputs(args=(variable("value", int),)),
+        )
+        self.assertEqual(recipe.describe(), "out <- value")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from typing import Any
 
 from .cache import ExecutionContext
 from .executor import Cooker
+from .loading import load_recipe
 from .protocols import LoadFunc, TransformFunc
 from .recipe import RecipeBook
 
@@ -26,6 +27,21 @@ def execute(
     cooker.prep(dict(inputs))
     cooker.cook(targets=targets, validate=validate)
     return cooker.serve(targets=targets)
+
+
+def describe(
+    recipebook: RecipeBook | str | Path,
+    *,
+    targets: Sequence[str] | str | None = None,
+    available_inputs: Sequence[str] | set[str] | None = None,
+) -> str:
+    """Describe the reachable workflow graph for the requested targets."""
+    loaded_recipe, default_targets = load_recipe(recipebook)
+    resolved_targets = default_targets if targets is None else targets
+    return loaded_recipe.describe(
+        targets=resolved_targets,
+        available_inputs=available_inputs,
+    )
 
 
 def parse_file(

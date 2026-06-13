@@ -1,7 +1,7 @@
 # DataCooker
 
-`DataCooker` is an API library for declaring, validating, and executing static
-data workflows over a fixed dependency graph.
+`DataCooker` is a typed API library for declaring, validating, and executing
+static data workflows over a fixed dependency graph.
 
 ## Scope
 
@@ -12,6 +12,7 @@ This repository intentionally keeps only reusable workflow primitives:
 - `ExecutionContext` / `ParsingCache` for runtime values
 - `execute()` for running workflows from in-memory inputs
 - `parse_dict()` and `parse_file()` as convenience wrappers
+- `describe()` for workflow introspection and debugging
 
 Domain-specific pipelines, IO loaders, model calls, and data products are
 expected to live in downstream repositories.
@@ -46,17 +47,17 @@ pip install -e .
 ## Quick Start
 
 ```python
-from datacooker import RecipeBook, execute
+from datacooker import RecipeBook, execute, variable
 
 
 def add(a: int, b: int) -> int:
     return a + b
 
 
-recipe = RecipeBook().add(
-    (("sum", int),),
-    add,
-    {"args": (("a", int), ("b", int))},
+recipe = RecipeBook().step(
+    outputs=variable("sum", int),
+    instruction=add,
+    args=[variable("a", int), variable("b", int)],
 )
 
 result = execute(recipe, {"a": 1, "b": 2}, targets="sum")
@@ -66,23 +67,48 @@ assert result["sum"] == 3
 ## Multi-Step Example
 
 ```python
-from datacooker import RecipeBook, execute
+from datacooker import RecipeBook, execute, variable
 
 
 recipe = RecipeBook()
-recipe.add(
-    (("sum", int),),
-    lambda a, b: a + b,
-    {"args": (("a", int), ("b", int))},
+recipe.step(
+    outputs=variable("sum", int),
+    instruction=lambda a, b: a + b,
+    args=[variable("a", int), variable("b", int)],
 )
-recipe.add(
-    (("label", str),),
-    lambda total: f"total={total}",
-    {"args": (("sum", int),)},
+recipe.step(
+    outputs=variable("label", str),
+    instruction=lambda total: f"total={total}",
+    args=[variable("sum", int)],
 )
+recipe.set_default_targets("label")
 
-result = execute(recipe, {"a": 2, "b": 5}, targets="label")
+result = execute(recipe, {"a": 2, "b": 5})
 assert result == {"label": "total=7"}
+```
+
+## Workflow Introspection
+
+```python
+from datacooker import describe
+
+print(
+    describe(
+        recipe,
+        available_inputs={"a", "b"},
+    )
+)
+```
+
+Example output:
+
+```text
+Targets: label
+Required inputs: a, b
+Missing inputs: <none>
+Execution order:
+1. sum <- a, b
+2. label <- sum
 ```
 
 ## File-Based Recipes
@@ -91,6 +117,9 @@ Recipe modules can expose:
 
 - `RECIPE`: a `RecipeBook`
 - `TARGETS`: optional default targets
+
+If `TARGETS` is omitted, `RecipeBook.set_default_targets(...)` can define the
+same behavior inside the module.
 
 Then run them with:
 
@@ -104,12 +133,14 @@ result = parse_dict(Path("my_recipe.py"), {"a": 1, "b": 2})
 
 ## Public API
 
-- `RecipeBook`: declare workflow steps
+- `RecipeBook`: declare workflow steps, defaults, and graph metadata
 - `Cooker`: stateful executor for advanced usage
 - `execute`: primary execution entrypoint
+- `describe`: graph introspection entrypoint
 - `parse_dict`, `parse_file`: convenience wrappers
 - `load_recipe`: load `RECIPE` / `TARGETS` from a module path
 - `ExecutionContext`: runtime key-value store
+- `Variable`, `Inputs`, `Recipe`, `variable`: typed declaration helpers
 
 ## Current Guarantees
 
@@ -117,3 +148,11 @@ result = parse_dict(Path("my_recipe.py"), {"a": 1, "b": 2})
 - target selection supports full-graph or subset execution
 - recipe validation checks missing dependencies and cycles
 - wildcard args resolve against keys already present in the execution context
+- recipe books can expose default targets directly
+- the package ships inline type information via `py.typed`
+
+## Compatibility
+
+The legacy `RecipeBook.add(...)`, `parse(...)`, and `rebuild(...)` APIs remain
+available for existing downstream code. New code should prefer
+`RecipeBook.step(...)` plus `execute(...)`.

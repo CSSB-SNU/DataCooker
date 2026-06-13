@@ -1,101 +1,158 @@
-from collections.abc import Callable, Mapping
+"""Recipe declarations and graph introspection utilities."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, TypeAlias, get_args
+from typing import Any, TypeAlias, TypeGuard, cast, get_args
 
 from .errors import (
     CycleError,
     DuplicateTargetError,
+    InvalidRecipeError,
     MissingDependencyError,
     UnknownTargetError,
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Variable:
-    """Represents a target variable in a recipe step."""
+    """Represents a named artifact or input used by a workflow step."""
 
     name: str
     type: type[Any]
 
 
-VariableSet: TypeAlias = tuple[Variable, ...]
-VariableMap: TypeAlias = Mapping[str, Variable]
-
-RawVariableSet: TypeAlias = tuple[tuple[str, type[Any]], ...]
-RawVariableMap: TypeAlias = Mapping[str, tuple[str, type[Any]]]
-
-
 @dataclass(frozen=True, slots=True)
 class Inputs:
-    """Represents input variables for a recipe step."""
+    """Represents positional inputs, named inputs, and static parameters."""
 
-    args: VariableSet = field(default_factory=tuple)
-    kwargs: VariableMap = field(default_factory=dict)
+    args: tuple[Variable, ...] = field(default_factory=tuple)
+    kwargs: Mapping[str, Variable] = field(default_factory=dict)
     params: Mapping[str, Any] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Recipe:
-    """A single step in a data processing recipe."""
+    """Represents a single workflow step."""
 
-    targets: VariableSet
-    instruction: Callable
+    targets: tuple[Variable, ...]
+    instruction: Callable[..., Any]
     inputs: Inputs
+
+    @property
+    def target_names(self) -> tuple[str, ...]:
+        """Return the output target names declared by this step."""
+        return tuple(variable.name for variable in self.targets)
+
+    def describe(self) -> str:
+        """Return a compact human-readable summary for the step."""
+        outputs = ", ".join(self.target_names)
+        positional = [variable.name for variable in self.inputs.args]
+        keyword = [
+            f"{name}={variable.name}" for name, variable in self.inputs.kwargs.items()
+        ]
+        static_params = [f"{name}={value!r}" for name, value in self.inputs.params.items()]
+        inputs = positional + keyword + static_params
+        dependency_text = ", ".join(inputs) if inputs else "<none>"
+        return f"{outputs} <- {dependency_text}"
 
 
 class RecipeError(KeyError):
-    """Custom error for missing recipe targets."""
+    """Raised when a declared recipe target cannot be found."""
+
+
+VariableSet: TypeAlias = tuple[Variable, ...]
+VariableMap: TypeAlias = Mapping[str, Variable]
+RawVariable: TypeAlias = tuple[str, type[Any]]
+RawVariableSet: TypeAlias = tuple[RawVariable, ...]
+RawVariableMap: TypeAlias = Mapping[str, RawVariable]
+VariableLike: TypeAlias = Variable | RawVariable
+RAW_VARIABLE_PARTS = 2
+
+
+def variable(name: str, data_type: type[Any] = object) -> Variable:
+    """Create a typed variable declaration."""
+    return Variable(name=name, type=data_type)
 
 
 class RecipeBook:
-    """Recipe Builder for defining data processing workflows."""
+    """Declarative builder and validator for static workflow graphs."""
 
     def __init__(self) -> None:
-        self.steps: list[Recipe] = []
+        self._steps: list[Recipe] = []
+        self._recipes_by_target: dict[str, Recipe] = {}
+        self._default_targets: list[str] | None = None
 
-    def _check_duplicate_targets(self, targets: VariableSet) -> None:
-        for target in targets:
-            if target.name in self:
-                msg = f"Target '{target.name}' is already defined in the recipe."
-                raise DuplicateTargetError(msg)
+    @property
+    def steps(self) -> tuple[Recipe, ...]:
+        """Return the declared steps in insertion order."""
+        return tuple(self._steps)
 
-    def _coerce_to_variable_set(self, varset: RawVariableSet | None) -> VariableSet:
-        if not varset:
-            return ()
-        return tuple(Variable(*t) for t in varset)
+    @property
+    def default_targets(self) -> list[str] | None:
+        """Return the default target list used when no explicit targets are given."""
+        if self._default_targets is None:
+            return None
+        return list(self._default_targets)
 
-    def _coerce_to_variable_map(self, varset: RawVariableMap | None) -> VariableMap:
-        if not varset:
-            return {}
-        return {key: Variable(*t) for key, t in varset.items()}
+    def copy(self) -> RecipeBook:
+        """Return a shallow copy of the recipe book."""
+        copied = RecipeBook()
+        copied._steps = list(self._steps)
+        copied._recipes_by_target = dict(self._recipes_by_target)
+        copied._default_targets = self.default_targets
+        return copied
 
-    def _single_add(
+    def set_default_targets(
         self,
-        targetset: RawVariableSet,
-        instruction: Callable,
-        inputs: dict[str, Any],
-    ) -> None:
-        arg_vars = self._coerce_to_variable_set(inputs.get("args"))
-        kwarg_vars = self._coerce_to_variable_map(inputs.get("kwargs"))
-        params_dict = inputs.get("params", {})
-        final_inputs = Inputs(args=arg_vars, kwargs=kwarg_vars, params=params_dict)
-        final_targetset = self._coerce_to_variable_set(targetset)
+        targets: str | Sequence[str] | None,
+    ) -> RecipeBook:
+        """Set or clear the default target selection for this recipe book."""
+        if targets is None:
+            self._default_targets = None
+            return self
 
-        self._check_duplicate_targets(final_targetset)
-        step = Recipe(
-            targets=final_targetset,
-            instruction=instruction,
-            inputs=final_inputs,
+        normalized_targets = self._normalize_requested_targets(targets, allow_empty=True)
+        self._default_targets = normalized_targets
+        return self
+
+    def step(
+        self,
+        outputs: VariableLike | Sequence[VariableLike],
+        instruction: Callable[..., Any],
+        *,
+        args: VariableLike | Sequence[VariableLike] | None = None,
+        kwargs: Mapping[str, VariableLike] | None = None,
+        params: Mapping[str, Any] | None = None,
+    ) -> RecipeBook:
+        """Add a step using a clearer named-argument declaration style."""
+        final_targets = _coerce_variable_sequence(outputs)
+        if not final_targets:
+            msg = "Recipe steps must declare at least one target."
+            raise InvalidRecipeError(msg)
+
+        step_inputs = Inputs(
+            args=_coerce_optional_variable_sequence(args),
+            kwargs=_coerce_variable_map(kwargs),
+            params=dict(params or {}),
         )
-        self.steps.append(step)
+        self._register_step(
+            Recipe(
+                targets=final_targets,
+                instruction=instruction,
+                inputs=step_inputs,
+            )
+        )
+        return self
 
     def add(
         self,
         targets: RawVariableSet | list[RawVariableSet],
-        instruction: Callable,
+        instruction: Callable[..., Any],
         inputs: dict[str, Any] | list[dict[str, Any]],
-    ) -> "RecipeBook":
-        """Add a new step to the recipe."""
+    ) -> RecipeBook:
+        """Backward-compatible step declaration API."""
         if isinstance(targets, list):
             if not isinstance(inputs, list):
                 msg = "Targets and inputs must both be scalars or both be lists."
@@ -107,48 +164,71 @@ class RecipeBook:
                 )
                 raise ValueError(msg)
             for targetset, input_bundle in zip(targets, inputs, strict=True):
-                self._single_add(targetset, instruction, input_bundle)
+                self._add_legacy_step(targetset, instruction, input_bundle)
             return self
 
         if isinstance(inputs, list):
             msg = "Targets and inputs must both be scalars or both be lists."
             raise TypeError(msg)
 
-        self._single_add(targets, instruction, inputs)
-
+        self._add_legacy_step(targets, instruction, inputs)
         return self
 
+    def _add_legacy_step(
+        self,
+        targetset: RawVariableSet,
+        instruction: Callable[..., Any],
+        inputs: Mapping[str, Any],
+    ) -> None:
+        self.step(
+            outputs=targetset,
+            instruction=instruction,
+            args=inputs.get("args"),
+            kwargs=inputs.get("kwargs"),
+            params=inputs.get("params"),
+        )
+
+    def _register_step(self, recipe: Recipe) -> None:
+        for target in recipe.targets:
+            if target.name in self._recipes_by_target:
+                msg = f"Target '{target.name}' is already defined in the recipe."
+                raise DuplicateTargetError(msg)
+
+        self._steps.append(recipe)
+        for target in recipe.targets:
+            self._recipes_by_target[target.name] = recipe
+
     def __contains__(self, target_name: str) -> bool:
-        """Check if any step contains a target with this name."""
-        return any(t.name == target_name for step in self.steps for t in step.targets)
+        """Return whether the recipe book declares a target."""
+        return target_name in self._recipes_by_target
 
     def __getitem__(self, target_name: str) -> Recipe:
-        """Retrieve a recipe step by target name."""
-        for step in self.steps:
-            for t in step.targets:
-                if t.name == target_name:
-                    return step
-        msg = f"Recipe for target '{target_name}' not found."
-        raise RecipeError(msg)
+        """Return the step that produces the requested target."""
+        try:
+            return self._recipes_by_target[target_name]
+        except KeyError as exc:
+            msg = f"Recipe for target '{target_name}' not found."
+            raise RecipeError(msg) from exc
+
+    def __len__(self) -> int:
+        """Return the number of declared steps."""
+        return len(self._steps)
 
     def targets(self) -> list[Variable]:
-        """Return a list of all target names defined in the recipe book."""
-        all_targets = []
-        for step in self.steps:
-            all_targets.extend(list(step.targets))
-        return all_targets
+        """Return all declared targets in insertion order."""
+        return [target for step in self._steps for target in step.targets]
 
     def target_names(self) -> list[str]:
-        """Return the declared output target names in declaration order."""
+        """Return all declared target names in insertion order."""
         return [target.name for target in self.targets()]
 
     def dependencies(self, target_name: str) -> tuple[Variable, ...]:
-        """Return the direct dependencies for a given target."""
+        """Return the direct variable dependencies for the target."""
         recipe = self[target_name]
         return (*recipe.inputs.args, *recipe.inputs.kwargs.values())
 
-    def required_inputs(self, targets: str | list[str] | None = None) -> set[str]:
-        """Return unresolved external inputs required for the requested targets."""
+    def required_inputs(self, targets: str | Sequence[str] | None = None) -> set[str]:
+        """Return unresolved external inputs needed for the requested targets."""
         requested_targets = self._normalize_requested_targets(targets)
         required: set[str] = set()
         visited: set[str] = set()
@@ -157,6 +237,7 @@ class RecipeBook:
             if target_name in visited:
                 return
             visited.add(target_name)
+
             for dependency in self.dependencies(target_name):
                 if _is_wildcard_pattern(dependency.name):
                     continue
@@ -169,43 +250,24 @@ class RecipeBook:
             walk(target_name)
         return required
 
-    def validate(
+    def missing_inputs(
         self,
-        *,
-        available_inputs: set[str] | None = None,
-        targets: str | list[str] | None = None,
-    ) -> None:
-        """Validate the static workflow graph and its reachable dependencies."""
+        available_inputs: Sequence[str] | set[str],
+        targets: str | Sequence[str] | None = None,
+    ) -> set[str]:
+        """Return missing external inputs for the requested targets."""
+        available = set(available_inputs)
+        return self.required_inputs(targets) - available
+
+    def execution_order(self, targets: str | Sequence[str] | None = None) -> list[Recipe]:
+        """Return the topologically sorted steps needed for the requested targets."""
         requested_targets = self._normalize_requested_targets(targets)
-        adjacency: dict[str, set[str]] = {name: set() for name in requested_targets}
-        visited: set[str] = set()
-
-        def build_graph(target_name: str) -> None:
-            if target_name in visited:
-                return
-            visited.add(target_name)
-            adjacency.setdefault(target_name, set())
-            for dependency in self.dependencies(target_name):
-                if _is_wildcard_pattern(dependency.name):
-                    continue
-                if dependency.name in self:
-                    adjacency[target_name].add(dependency.name)
-                    build_graph(dependency.name)
-
-        for target_name in requested_targets:
-            build_graph(target_name)
-
-        if available_inputs is not None:
-            missing_inputs = self.required_inputs(requested_targets) - set(available_inputs)
-            if missing_inputs:
-                missing = ", ".join(sorted(missing_inputs))
-                msg = f"Missing required workflow inputs: {missing}."
-                raise MissingDependencyError(msg)
-
+        order: list[Recipe] = []
+        emitted_steps: set[int] = set()
         not_visited = 0
         visiting = 1
         visited_state = 2
-        state = dict.fromkeys(adjacency, not_visited)
+        state = dict.fromkeys(self.target_names(), not_visited)
         trail: list[str] = []
 
         def visit(target_name: str) -> None:
@@ -216,32 +278,141 @@ class RecipeBook:
                 raise CycleError(msg)
             if current_state == visited_state:
                 return
+
             state[target_name] = visiting
             trail.append(target_name)
-            for dependency_name in adjacency[target_name]:
-                visit(dependency_name)
+            recipe = self[target_name]
+            for dependency in self.dependencies(target_name):
+                if _is_wildcard_pattern(dependency.name):
+                    continue
+                if dependency.name in self:
+                    visit(dependency.name)
             trail.pop()
             state[target_name] = visited_state
+
+            recipe_id = id(recipe)
+            if recipe_id not in emitted_steps:
+                emitted_steps.add(recipe_id)
+                order.append(recipe)
 
         for target_name in requested_targets:
             visit(target_name)
 
+        return order
+
+    def describe(
+        self,
+        *,
+        targets: str | Sequence[str] | None = None,
+        available_inputs: Sequence[str] | set[str] | None = None,
+    ) -> str:
+        """Return a human-readable workflow summary for the requested targets."""
+        requested_targets = self._normalize_requested_targets(targets)
+        required_inputs = sorted(self.required_inputs(requested_targets))
+        missing_inputs = (
+            sorted(self.missing_inputs(available_inputs, requested_targets))
+            if available_inputs is not None
+            else []
+        )
+        lines = [
+            "Targets: " + ", ".join(requested_targets),
+            "Required inputs: " + (", ".join(required_inputs) if required_inputs else "<none>"),
+        ]
+        if available_inputs is not None:
+            lines.append(
+                "Missing inputs: "
+                + (", ".join(missing_inputs) if missing_inputs else "<none>")
+            )
+        lines.append("Execution order:")
+        for index, recipe in enumerate(self.execution_order(requested_targets), start=1):
+            lines.append(f"{index}. {recipe.describe()}")
+        return "\n".join(lines)
+
+    def validate(
+        self,
+        *,
+        available_inputs: set[str] | None = None,
+        targets: str | Sequence[str] | None = None,
+    ) -> None:
+        """Validate missing inputs, unknown targets, and dependency cycles."""
+        requested_targets = self._normalize_requested_targets(targets)
+        if available_inputs is not None:
+            missing_inputs = self.missing_inputs(available_inputs, requested_targets)
+            if missing_inputs:
+                missing = ", ".join(sorted(missing_inputs))
+                msg = f"Missing required workflow inputs: {missing}."
+                raise MissingDependencyError(msg)
+        self.execution_order(requested_targets)
+
     def _normalize_requested_targets(
         self,
-        targets: str | list[str] | None = None,
+        targets: str | Sequence[str] | None,
+        *,
+        allow_empty: bool = False,
     ) -> list[str]:
         if targets is None:
-            requested_targets = self.target_names()
+            normalized = (
+                list(self._default_targets)
+                if self._default_targets is not None
+                else self.target_names()
+            )
         elif isinstance(targets, str):
-            requested_targets = [targets]
+            normalized = [targets]
         else:
-            requested_targets = list(targets)
+            normalized = list(targets)
 
-        for target_name in requested_targets:
+        if not allow_empty and not normalized:
+            msg = "No targets were requested and the recipe has no default targets."
+            raise InvalidRecipeError(msg)
+
+        for target_name in normalized:
             if target_name not in self:
                 msg = f"Target '{target_name}' is not declared in the recipe."
                 raise UnknownTargetError(msg)
-        return requested_targets
+        return normalized
+
+
+def _is_raw_variable(value: object) -> TypeGuard[RawVariable]:
+    return (
+        isinstance(value, tuple)
+        and len(value) == RAW_VARIABLE_PARTS
+        and isinstance(value[0], str)
+        and isinstance(value[1], type)
+    )
+
+
+def _coerce_variable(value: VariableLike) -> Variable:
+    if isinstance(value, Variable):
+        return value
+    if _is_raw_variable(value):
+        return Variable(*value)
+    msg = f"Invalid variable declaration: {value!r}."
+    raise InvalidRecipeError(msg)
+
+
+def _coerce_variable_sequence(
+    values: VariableLike | Sequence[VariableLike],
+) -> tuple[Variable, ...]:
+    if isinstance(values, Variable) or _is_raw_variable(values):
+        return (_coerce_variable(values),)
+    sequence = cast("Sequence[VariableLike]", values)
+    return tuple(_coerce_variable(value) for value in sequence)
+
+
+def _coerce_optional_variable_sequence(
+    values: VariableLike | Sequence[VariableLike] | None,
+) -> tuple[Variable, ...]:
+    if values is None:
+        return ()
+    return _coerce_variable_sequence(values)
+
+
+def _coerce_variable_map(
+    values: Mapping[str, VariableLike] | None,
+) -> dict[str, Variable]:
+    if not values:
+        return {}
+    return {name: _coerce_variable(value) for name, value in values.items()}
 
 
 def _allows_none(annotation: object) -> bool:

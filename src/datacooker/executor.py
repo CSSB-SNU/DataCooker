@@ -46,10 +46,14 @@ class Cooker:
         self.parse_cache = parse_cache
         if isinstance(recipebook, RecipeBook):
             self.recipebook = recipebook
-            self.targets = normalize_targets(targets)
+            self.targets = (
+                recipebook.default_targets if targets is None else normalize_targets(targets)
+            )
         else:
             self.recipebook, default_targets = load_recipe(recipebook)
-            self.targets = normalize_targets(targets or default_targets)
+            self.targets = (
+                default_targets if targets is None else normalize_targets(targets)
+            )
 
     def prep(
         self,
