@@ -19,11 +19,21 @@ def execute(
     *,
     transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
+    step_names: Sequence[str] | str | None = None,
+    tags: Sequence[str] | str | None = None,
+    namespaces: Sequence[str] | str | None = None,
     validate: bool = True,
 ) -> dict[str, Any]:
     """Execute a static workflow graph and return the requested outputs."""
+    selected_recipe = _select_recipebook(
+        recipebook,
+        targets=targets,
+        step_names=step_names,
+        tags=tags,
+        namespaces=namespaces,
+    )
     parse_cache = ExecutionContext(transform_func)
-    cooker = Cooker(parse_cache=parse_cache, recipebook=recipebook)
+    cooker = Cooker(parse_cache=parse_cache, recipebook=selected_recipe)
     cooker.prep(dict(inputs))
     cooker.cook(targets=targets, validate=validate)
     return cooker.serve(targets=targets)
@@ -33,11 +43,20 @@ def describe(
     recipebook: RecipeBook | str | Path,
     *,
     targets: Sequence[str] | str | None = None,
+    step_names: Sequence[str] | str | None = None,
+    tags: Sequence[str] | str | None = None,
+    namespaces: Sequence[str] | str | None = None,
     available_inputs: Sequence[str] | set[str] | None = None,
 ) -> str:
     """Describe the reachable workflow graph for the requested targets."""
-    loaded_recipe, default_targets = load_recipe(recipebook)
-    resolved_targets = default_targets if targets is None else targets
+    loaded_recipe = _select_recipebook(
+        recipebook,
+        targets=targets,
+        step_names=step_names,
+        tags=tags,
+        namespaces=namespaces,
+    )
+    resolved_targets = loaded_recipe.default_targets if targets is None else targets
     return loaded_recipe.describe(
         targets=resolved_targets,
         available_inputs=available_inputs,
@@ -49,11 +68,20 @@ def visualize(
     *,
     output_format: str = "mermaid",
     targets: Sequence[str] | str | None = None,
+    step_names: Sequence[str] | str | None = None,
+    tags: Sequence[str] | str | None = None,
+    namespaces: Sequence[str] | str | None = None,
     available_inputs: Sequence[str] | set[str] | None = None,
 ) -> str:
     """Render a workflow graph in Mermaid or DOT format."""
-    loaded_recipe, default_targets = load_recipe(recipebook)
-    resolved_targets = default_targets if targets is None else targets
+    loaded_recipe = _select_recipebook(
+        recipebook,
+        targets=targets,
+        step_names=step_names,
+        tags=tags,
+        namespaces=namespaces,
+    )
+    resolved_targets = loaded_recipe.default_targets if targets is None else targets
     return loaded_recipe.visualize(
         output_format=output_format,
         targets=resolved_targets,
@@ -68,6 +96,9 @@ def parse_file(
     inputs: Mapping[str, Any] | None = None,
     transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
+    step_names: Sequence[str] | str | None = None,
+    tags: Sequence[str] | str | None = None,
+    namespaces: Sequence[str] | str | None = None,
     validate: bool = True,
     **extra_kwargs: Any,
 ) -> dict[str, Any]:
@@ -83,6 +114,9 @@ def parse_file(
         data_dict,
         transform_func=transform_func,
         targets=targets,
+        step_names=step_names,
+        tags=tags,
+        namespaces=namespaces,
         validate=validate,
     )
 
@@ -92,6 +126,9 @@ def parse_dict(
     datadict: Mapping[str, Any],
     transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
+    step_names: Sequence[str] | str | None = None,
+    tags: Sequence[str] | str | None = None,
+    namespaces: Sequence[str] | str | None = None,
     validate: bool = True,
     **extra_kwargs: Any,
 ) -> dict[str, Any]:
@@ -103,6 +140,9 @@ def parse_dict(
         data_dict,
         transform_func=transform_func,
         targets=targets,
+        step_names=step_names,
+        tags=tags,
+        namespaces=namespaces,
         validate=validate,
     )
 
@@ -113,6 +153,9 @@ def parse(
     load_func: LoadFunc,
     transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
+    step_names: Sequence[str] | str | None = None,
+    tags: Sequence[str] | str | None = None,
+    namespaces: Sequence[str] | str | None = None,
     **extra_kwargs: Any,
 ) -> dict[str, Any]:
     """Backward-compatible alias for :func:`parse_file`."""
@@ -122,6 +165,9 @@ def parse(
         load_func,
         transform_func=transform_func,
         targets=targets,
+        step_names=step_names,
+        tags=tags,
+        namespaces=namespaces,
         **extra_kwargs,
     )
 
@@ -131,6 +177,9 @@ def rebuild(
     datadict: Mapping[str, Any],
     transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
+    step_names: Sequence[str] | str | None = None,
+    tags: Sequence[str] | str | None = None,
+    namespaces: Sequence[str] | str | None = None,
     **extra_kwargs: Any,
 ) -> dict[str, Any]:
     """Backward-compatible alias for :func:`parse_dict`."""
@@ -139,5 +188,31 @@ def rebuild(
         datadict,
         transform_func=transform_func,
         targets=targets,
+        step_names=step_names,
+        tags=tags,
+        namespaces=namespaces,
         **extra_kwargs,
+    )
+
+
+def _select_recipebook(
+    recipebook: RecipeBook | str | Path,
+    *,
+    targets: Sequence[str] | str | None = None,
+    step_names: Sequence[str] | str | None = None,
+    tags: Sequence[str] | str | None = None,
+    namespaces: Sequence[str] | str | None = None,
+) -> RecipeBook:
+    has_filters = any(selection is not None for selection in (step_names, tags, namespaces))
+    loaded_recipe, default_targets = load_recipe(recipebook)
+    if targets is None and not has_filters:
+        if default_targets is None:
+            return loaded_recipe
+        return loaded_recipe.subset(targets=default_targets)
+
+    return loaded_recipe.subset(
+        targets=targets,
+        step_names=step_names,
+        tags=tags,
+        namespaces=namespaces,
     )

@@ -7,14 +7,21 @@ import unittest
 from importlib.util import find_spec
 from pathlib import Path
 
-from datacooker import (
+from datacooker.lmdb import (
+    LmdbWriteReport,
     build_lmdb,
     count_lmdb_entries,
+    default_lmdb_key,
     extract_lmdb_keys,
+    extract_lmdb_records,
+    filter_pending_lmdb_paths,
     read_all_lmdb_raw,
     read_lmdb,
     read_lmdb_raw,
     rebuild_lmdb,
+)
+from datacooker.processing import parallel_process
+from datacooker.utils import (
     resolve_node_config,
     resolve_object,
     scan_paths,
@@ -62,7 +69,7 @@ class DataCookerUtilsTests(unittest.TestCase):
             second.write_text("5")
             env_path = root / "numbers.lmdb"
 
-            build_lmdb(
+            report = build_lmdb(
                 first,
                 second,
                 env_path=env_path,
@@ -74,8 +81,17 @@ class DataCookerUtilsTests(unittest.TestCase):
                 test_run=False,
             )
 
+            self.assertIsInstance(report, LmdbWriteReport)
+            self.assertEqual(report.attempted, 2)
+            self.assertEqual(report.written, 2)
+            self.assertEqual(report.failed, 0)
             self.assertEqual(sorted(extract_lmdb_keys(env_path)), ["a", "b"])
+            self.assertEqual(default_lmdb_key(first), "a")
             self.assertEqual(count_lmdb_entries(env_path), 2)
+            self.assertEqual(
+                [path.name for path in filter_pending_lmdb_paths([first, second], env_path)],
+                [],
+            )
             self.assertEqual(read_lmdb_raw(env_path, "a"), _serialize({"double": 4}))
             self.assertEqual(
                 read_all_lmdb_raw(env_path),
@@ -87,6 +103,20 @@ class DataCookerUtilsTests(unittest.TestCase):
             self.assertEqual(
                 read_lmdb(env_path, "a", deserialize=_deserialize),
                 {"double": 4},
+            )
+            self.assertEqual(
+                extract_lmdb_records(
+                    env_path,
+                    recipe_path := recipe_path,
+                    deserialize=_deserialize,
+                    chunk_size=1,
+                    n_jobs=1,
+                    test_run=False,
+                ),
+                {
+                    "a": {"double": 4},
+                    "b": {"double": 10},
+                },
             )
 
     @unittest.skipUnless(
@@ -139,7 +169,7 @@ class DataCookerUtilsTests(unittest.TestCase):
                 test_run=False,
             )
 
-            rebuild_lmdb(
+            report = rebuild_lmdb(
                 old_env_path=old_env,
                 new_env_path=new_env,
                 recipe=rebuild_recipe,
@@ -149,10 +179,66 @@ class DataCookerUtilsTests(unittest.TestCase):
                 test_run=False,
             )
 
+            self.assertEqual(report.attempted, 1)
+            self.assertEqual(report.written, 1)
+            self.assertEqual(report.failed, 0)
             self.assertEqual(
                 read_lmdb(new_env, "value", deserialize=_deserialize),
                 {"triple": 9},
             )
+
+    @unittest.skipUnless(
+        DB_UTILS_AVAILABLE,
+        "lmdb/joblib are not installed in this environment",
+    )
+    def test_build_lmdb_can_skip_existing_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            recipe_path = root / "recipe_mod.py"
+            recipe_path.write_text(
+                textwrap.dedent(
+                    """
+                    from datacooker import RecipeBook, variable
+
+                    RECIPE = RecipeBook().step(
+                        outputs=variable("value", int),
+                        instruction=lambda value: value,
+                        args=[variable("value", int)],
+                    )
+                    """
+                )
+            )
+            first = root / "a.txt"
+            second = root / "b.txt"
+            first.write_text("1")
+            second.write_text("2")
+            env_path = root / "numbers.lmdb"
+
+            build_lmdb(
+                first,
+                env_path=env_path,
+                recipe=recipe_path,
+                serialize=_serialize,
+                load_func=lambda file_path: {"value": int(file_path.read_text())},
+                n_jobs=1,
+                test_run=False,
+            )
+            report = build_lmdb(
+                first,
+                second,
+                env_path=env_path,
+                recipe=recipe_path,
+                serialize=_serialize,
+                load_func=lambda file_path: {"value": int(file_path.read_text())},
+                skip_existing=True,
+                n_jobs=1,
+                test_run=False,
+            )
+
+            self.assertEqual(report.attempted, 2)
+            self.assertEqual(report.written, 1)
+            self.assertEqual(report.skipped_existing, 1)
+            self.assertEqual(count_lmdb_entries(env_path), 2)
 
     def test_sharding_helpers(self) -> None:
         self.assertEqual(resolve_node_config(node_rank=1, node_count=3), (1, 3))
@@ -174,3 +260,33 @@ class DataCookerUtilsTests(unittest.TestCase):
                 sorted(path.relative_to(root).as_posix() for path in scan_paths(root, pattern="*.txt")),
                 ["a.txt", "nested/b.txt"],
             )
+
+    @unittest.skipUnless(JOBLIB_AVAILABLE, "joblib is not installed in this environment")
+    def test_parallel_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            recipe_path = root / "recipe_mod.py"
+            recipe_path.write_text(
+                textwrap.dedent(
+                    """
+                    from datacooker import RecipeBook, variable
+
+                    RECIPE = RecipeBook().step(
+                        outputs=variable("double", int),
+                        instruction=lambda value, bias: value * 2 + bias,
+                        args=[variable("value", int), variable("bias", int)],
+                    )
+                    """
+                )
+            )
+
+            results = parallel_process(
+                [{"value": 2}, {"value": 5}],
+                inputs={"bias": 1},
+                recipe=recipe_path,
+                n_jobs=1,
+                chunk_size=1,
+                test_run=False,
+            )
+
+            self.assertEqual(results, [({"double": 5}, None), ({"double": 11}, None)])

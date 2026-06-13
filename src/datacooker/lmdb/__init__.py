@@ -1,14 +1,13 @@
-"""Backward-compatible re-exports for the historical ``datacooker.utils.db`` path."""
+"""Public LMDB workflow APIs for recipe-driven database pipelines."""
 
 from __future__ import annotations
 
-from datacooker.lmdb import (
+from .core import (
     LmdbWriteReport,
     build_lmdb,
     count_lmdb_entries,
     default_lmdb_key,
     extract_lmdb_keys,
-    extract_lmdb_records,
     filter_pending_lmdb_paths,
     merge_lmdb_shards,
     read_all_lmdb_raw,
@@ -16,6 +15,7 @@ from datacooker.lmdb import (
     read_lmdb_raw,
     rebuild_lmdb,
 )
+from .extract import extract_lmdb_records
 
 __all__ = [
     "LmdbWriteReport",

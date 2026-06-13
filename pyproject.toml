@@ -18,8 +18,15 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+]
+
+[project.optional-dependencies]
+lmdb = [
     "joblib>=1.4.0,<2",
     "lmdb>=1.6.0,<2",
+]
+parallel = [
+    "joblib>=1.4.0,<2",
 ]
 
 [project.urls]

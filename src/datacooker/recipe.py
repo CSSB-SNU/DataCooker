@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import fnmatch
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, TypeAlias, TypeGuard, cast, get_args
 
 from .errors import (
@@ -39,11 +41,43 @@ class Recipe:
     targets: tuple[Variable, ...]
     instruction: Callable[..., Any]
     inputs: Inputs
+    name: str | None = None
+    namespace: str | None = None
+    tags: frozenset[str] = field(default_factory=frozenset)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Normalize optional metadata fields into immutable step metadata."""
+        object.__setattr__(self, "name", _normalize_optional_string(self.name, field_name="name"))
+        object.__setattr__(
+            self,
+            "namespace",
+            _normalize_optional_string(self.namespace, field_name="namespace"),
+        )
+        object.__setattr__(
+            self,
+            "tags",
+            _normalize_string_set(self.tags, field_name="tags"),
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            cast("Mapping[str, Any]", MappingProxyType(dict(self.metadata))),
+        )
 
     @property
     def target_names(self) -> tuple[str, ...]:
         """Return the output target names declared by this step."""
         return tuple(variable.name for variable in self.targets)
+
+    @property
+    def qualified_name(self) -> str | None:
+        """Return the fully-qualified logical step name when available."""
+        if self.name is None:
+            return self.namespace
+        if self.namespace is None:
+            return self.name
+        return f"{self.namespace}.{self.name}"
 
     def describe(self) -> str:
         """Return a compact human-readable summary for the step."""
@@ -55,7 +89,13 @@ class Recipe:
         static_params = [f"{name}={value!r}" for name, value in self.inputs.params.items()]
         inputs = positional + keyword + static_params
         dependency_text = ", ".join(inputs) if inputs else "<none>"
-        return f"{outputs} <- {dependency_text}"
+        summary = f"{outputs} <- {dependency_text}"
+        label = self.qualified_name
+        if label is not None:
+            summary = f"[{label}] {summary}"
+        if self.tags:
+            summary = f"{summary} [tags: {', '.join(sorted(self.tags))}]"
+        return summary
 
     @property
     def instruction_name(self) -> str:
@@ -109,6 +149,100 @@ class RecipeBook:
         copied._default_targets = self.default_targets
         return copied
 
+    def subset(
+        self,
+        *,
+        targets: str | Sequence[str] | None = None,
+        step_names: str | Sequence[str] | None = None,
+        tags: str | Sequence[str] | None = None,
+        namespaces: str | Sequence[str] | None = None,
+    ) -> RecipeBook:
+        """Return an executable subgraph selected by targets or step metadata."""
+        filters_applied = any(
+            selection is not None
+            for selection in (step_names, tags, namespaces)
+        )
+        if targets is None and not filters_applied:
+            return self.copy()
+
+        selected_targets: list[str] = []
+        if targets is not None:
+            selected_targets.extend(self._normalize_requested_targets(targets, allow_empty=True))
+
+        selected_step_names = _normalize_string_selection(step_names, field_name="step_names")
+        selected_tags = _normalize_string_selection(tags, field_name="tags")
+        selected_namespaces = _normalize_string_selection(
+            namespaces,
+            field_name="namespaces",
+        )
+
+        if filters_applied:
+            for recipe in self._steps:
+                if _recipe_matches_filters(
+                    recipe,
+                    step_names=selected_step_names,
+                    tags=selected_tags,
+                    namespaces=selected_namespaces,
+                ):
+                    selected_targets.extend(recipe.target_names)
+
+        subset_targets = _unique_names(selected_targets)
+        subset_recipe = RecipeBook()
+        if not subset_targets:
+            return subset_recipe
+
+        for recipe in self.execution_order(subset_targets):
+            subset_recipe._register_step(recipe)
+        subset_recipe._default_targets = list(subset_targets)
+        return subset_recipe
+
+    def with_namespace(self, namespace: str) -> RecipeBook:
+        """Return a namespaced copy suitable for modular reuse."""
+        namespace_prefix = _normalize_required_string(namespace, field_name="namespace")
+        internal_targets = set(self.target_names())
+        namespaced = RecipeBook()
+
+        for recipe in self._steps:
+            namespaced._register_step(
+                Recipe(
+                    targets=tuple(
+                        variable(_namespace_target(namespace_prefix, target.name), target.type)
+                        for target in recipe.targets
+                    ),
+                    instruction=recipe.instruction,
+                    inputs=Inputs(
+                        args=tuple(
+                            _namespace_dependency(
+                                dependency,
+                                namespace_prefix,
+                                internal_targets,
+                            )
+                            for dependency in recipe.inputs.args
+                        ),
+                        kwargs={
+                            name: _namespace_dependency(
+                                dependency,
+                                namespace_prefix,
+                                internal_targets,
+                            )
+                            for name, dependency in recipe.inputs.kwargs.items()
+                        },
+                        params=dict(recipe.inputs.params),
+                    ),
+                    name=recipe.name,
+                    namespace=_join_namespace(namespace_prefix, recipe.namespace),
+                    tags=recipe.tags,
+                    metadata=recipe.metadata,
+                )
+            )
+
+        if self._default_targets is not None:
+            namespaced._default_targets = [
+                _namespace_target(namespace_prefix, target_name)
+                for target_name in self._default_targets
+            ]
+        return namespaced
+
     def set_default_targets(
         self,
         targets: str | Sequence[str] | None,
@@ -130,6 +264,10 @@ class RecipeBook:
         args: VariableLike | Sequence[VariableLike] | None = None,
         kwargs: Mapping[str, VariableLike] | None = None,
         params: Mapping[str, Any] | None = None,
+        name: str | None = None,
+        tags: str | Sequence[str] | None = None,
+        namespace: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> RecipeBook:
         """Add a step using a clearer named-argument declaration style."""
         final_targets = _coerce_variable_sequence(outputs)
@@ -147,6 +285,10 @@ class RecipeBook:
                 targets=final_targets,
                 instruction=instruction,
                 inputs=step_inputs,
+                name=name,
+                namespace=namespace,
+                tags=_normalize_string_set(tags, field_name="tags"),
+                metadata=dict(metadata or {}),
             )
         )
         return self
@@ -595,6 +737,109 @@ def _coerce_variable_map(
     if not values:
         return {}
     return {name: _coerce_variable(value) for name, value in values.items()}
+
+
+def _normalize_optional_string(
+    value: str | None,
+    *,
+    field_name: str,
+) -> str | None:
+    if value is None:
+        return None
+    return _normalize_required_string(value, field_name=field_name)
+
+
+def _normalize_required_string(value: str, *, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        msg = f"{field_name} cannot be empty."
+        raise InvalidRecipeError(msg)
+    return normalized
+
+
+def _normalize_string_set(
+    values: str | Iterable[str] | None,
+    *,
+    field_name: str,
+) -> frozenset[str]:
+    if values is None:
+        return frozenset()
+    normalized = _normalize_string_selection(values, field_name=field_name)
+    return frozenset(normalized)
+
+
+def _normalize_string_selection(
+    values: str | Iterable[str] | None,
+    *,
+    field_name: str,
+) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    raw_values = [values] if isinstance(values, str) else list(values)
+    normalized = (
+        _normalize_required_string(value, field_name=field_name)
+        for value in raw_values
+    )
+    return tuple(_unique_names(normalized))
+
+
+def _unique_names(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            unique.append(value)
+    return unique
+
+
+def _recipe_matches_filters(
+    recipe: Recipe,
+    *,
+    step_names: Sequence[str],
+    tags: Sequence[str],
+    namespaces: Sequence[str],
+) -> bool:
+    if step_names and recipe.name not in step_names:
+        return False
+    if tags and not set(recipe.tags).intersection(tags):
+        return False
+    return not namespaces or any(
+        _namespace_matches(recipe.namespace, namespace)
+        for namespace in namespaces
+    )
+
+
+def _namespace_matches(recipe_namespace: str | None, selected_namespace: str) -> bool:
+    if recipe_namespace is None:
+        return False
+    return recipe_namespace == selected_namespace or recipe_namespace.startswith(
+        f"{selected_namespace}."
+    )
+
+
+def _join_namespace(prefix: str, suffix: str | None) -> str:
+    if suffix is None:
+        return prefix
+    return f"{prefix}.{suffix}"
+
+
+def _namespace_target(namespace: str, target_name: str) -> str:
+    return f"{namespace}.{target_name}"
+
+
+def _namespace_dependency(
+    dependency: Variable,
+    namespace: str,
+    internal_targets: set[str],
+) -> Variable:
+    if dependency.name in internal_targets:
+        return variable(_namespace_target(namespace, dependency.name), dependency.type)
+    if _is_wildcard_pattern(dependency.name) and any(
+        fnmatch.fnmatch(target_name, dependency.name) for target_name in internal_targets
+    ):
+        return variable(_namespace_target(namespace, dependency.name), dependency.type)
+    return dependency
 
 
 def _allows_none(annotation: object) -> bool:

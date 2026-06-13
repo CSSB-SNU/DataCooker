@@ -365,6 +365,106 @@ class DataCookerCoreTests(unittest.TestCase):
         self.assertEqual(error.expected_output_count, 2)
         self.assertIsNone(error.actual_output_count)
 
+    def test_step_metadata_is_stored_on_recipe(self) -> None:
+        recipebook = RecipeBook().step(
+            outputs=variable("normalized", int),
+            instruction=lambda value: value,
+            args=[variable("raw", int)],
+            name="normalize",
+            namespace="prep.clean",
+            tags=["core", "prep"],
+            metadata={"owner": "tests"},
+        )
+
+        step = recipebook.steps[0]
+
+        self.assertEqual(step.name, "normalize")
+        self.assertEqual(step.namespace, "prep.clean")
+        self.assertEqual(step.qualified_name, "prep.clean.normalize")
+        self.assertEqual(step.tags, frozenset({"core", "prep"}))
+        self.assertEqual(dict(step.metadata), {"owner": "tests"})
+        self.assertIn("[prep.clean.normalize]", step.describe())
+
+    def test_subset_by_tags_keeps_dependency_closure(self) -> None:
+        recipe = (
+            RecipeBook()
+            .step(
+                outputs=variable("sum", int),
+                instruction=lambda a, b: a + b,
+                args=[variable("a", int), variable("b", int)],
+                name="sum",
+                tags="core",
+            )
+            .step(
+                outputs=variable("label", str),
+                instruction=lambda total: f"sum={total}",
+                args=[variable("sum", int)],
+                name="label",
+                tags="report",
+            )
+        )
+
+        subset = recipe.subset(tags="report")
+        result = execute(subset, {"a": 2, "b": 3})
+
+        self.assertEqual(subset.default_targets, ["label"])
+        self.assertEqual([step.target_names for step in subset.steps], [("sum",), ("label",)])
+        self.assertEqual(result, {"label": "sum=5"})
+
+    def test_with_namespace_prefixes_internal_targets_only(self) -> None:
+        recipe = (
+            RecipeBook()
+            .step(
+                outputs=variable("sum", int),
+                instruction=lambda a, b: a + b,
+                args=[variable("a", int), variable("b", int)],
+                name="sum",
+            )
+            .step(
+                outputs=variable("label", str),
+                instruction=lambda total, prefix: f"{prefix}:{total}",
+                args=[variable("sum", int)],
+                kwargs={"prefix": variable("prefix", str)},
+                name="label",
+                namespace="report",
+            )
+            .set_default_targets("label")
+        )
+
+        namespaced = recipe.with_namespace("demo")
+        result = execute(
+            namespaced,
+            {"a": 2, "b": 3, "prefix": "sum"},
+        )
+
+        self.assertEqual(namespaced.default_targets, ["demo.label"])
+        self.assertEqual(namespaced.target_names(), ["demo.sum", "demo.label"])
+        self.assertEqual(namespaced.steps[1].namespace, "demo.report")
+        self.assertEqual(result, {"demo.label": "sum:5"})
+
+    def test_execute_supports_tag_filtered_subgraphs(self) -> None:
+        recipe = (
+            RecipeBook()
+            .step(
+                outputs=variable("embedding", str),
+                instruction=lambda text: text.upper(),
+                args=[variable("text", str)],
+                name="embed",
+                tags="model",
+            )
+            .step(
+                outputs=variable("length", int),
+                instruction=lambda text: len(text),
+                args=[variable("text", str)],
+                name="length",
+                tags="stats",
+            )
+        )
+
+        result = execute(recipe, {"text": "abc"}, tags="model")
+
+        self.assertEqual(result, {"embedding": "ABC"})
+
 
 if __name__ == "__main__":
     unittest.main()
