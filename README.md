@@ -13,6 +13,7 @@ This repository intentionally keeps only reusable workflow primitives:
 - `execute()` for running workflows from in-memory inputs
 - `parse_dict()` and `parse_file()` as convenience wrappers
 - `describe()` for workflow introspection and debugging
+- `visualize()` for Mermaid and Graphviz graph rendering
 
 Domain-specific pipelines, IO loaders, model calls, and data products are
 expected to live in downstream repositories.
@@ -90,7 +91,7 @@ assert result == {"label": "total=7"}
 ## Workflow Introspection
 
 ```python
-from datacooker import describe
+from datacooker import describe, visualize
 
 print(
     describe(
@@ -109,6 +110,18 @@ Missing inputs: <none>
 Execution order:
 1. sum <- a, b
 2. label <- sum
+```
+
+Mermaid output is available directly:
+
+```python
+print(visualize(recipe, available_inputs={"a", "b"}))
+```
+
+Graphviz DOT is also supported:
+
+```python
+print(visualize(recipe, output_format="dot", available_inputs={"a", "b"}))
 ```
 
 ## File-Based Recipes
@@ -137,10 +150,12 @@ result = parse_dict(Path("my_recipe.py"), {"a": 1, "b": 2})
 - `Cooker`: stateful executor for advanced usage
 - `execute`: primary execution entrypoint
 - `describe`: graph introspection entrypoint
+- `visualize`: graph rendering entrypoint
 - `parse_dict`, `parse_file`: convenience wrappers
 - `load_recipe`: load `RECIPE` / `TARGETS` from a module path
 - `ExecutionContext`: runtime key-value store
 - `Variable`, `Inputs`, `Recipe`, `variable`: typed declaration helpers
+- `MissingDependencyError`, `StepExecutionError`, `InstructionOutputError`: structured runtime diagnostics
 
 ## Current Guarantees
 
@@ -149,6 +164,8 @@ result = parse_dict(Path("my_recipe.py"), {"a": 1, "b": 2})
 - recipe validation checks missing dependencies and cycles
 - wildcard args resolve against keys already present in the execution context
 - recipe books can expose default targets directly
+- Mermaid and DOT graph rendering use the same static dependency model as execution
+- runtime errors carry structured context such as target names, dependency chains, and step descriptions
 - the package ships inline type information via `py.typed`
 
 ## Compatibility

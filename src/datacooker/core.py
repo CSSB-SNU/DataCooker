@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .api import describe, execute, parse, parse_dict, parse_file, rebuild
+from .api import describe, execute, parse, parse_dict, parse_file, rebuild, visualize
 from .executor import Cooker
 from .loading import load_recipe
 from .protocols import ConvertFunc, LoadFunc, TransformFunc
@@ -19,4 +19,5 @@ __all__ = [
     "parse_dict",
     "parse_file",
     "rebuild",
+    "visualize",
 ]

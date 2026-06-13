@@ -57,6 +57,11 @@ class Recipe:
         dependency_text = ", ".join(inputs) if inputs else "<none>"
         return f"{outputs} <- {dependency_text}"
 
+    @property
+    def instruction_name(self) -> str:
+        """Return a readable name for the step callable."""
+        return _callable_name(self.instruction)
+
 
 class RecipeError(KeyError):
     """Raised when a declared recipe target cannot be found."""
@@ -191,8 +196,16 @@ class RecipeBook:
     def _register_step(self, recipe: Recipe) -> None:
         for target in recipe.targets:
             if target.name in self._recipes_by_target:
-                msg = f"Target '{target.name}' is already defined in the recipe."
-                raise DuplicateTargetError(msg)
+                existing_step = self._recipes_by_target[target.name].describe()
+                msg = (
+                    f"Target '{target.name}' is already defined in the recipe. "
+                    f"Existing step: {existing_step}"
+                )
+                raise DuplicateTargetError(
+                    msg,
+                    target_name=target.name,
+                    existing_step=existing_step,
+                )
 
         self._steps.append(recipe)
         for target in recipe.targets:
@@ -273,9 +286,10 @@ class RecipeBook:
         def visit(target_name: str) -> None:
             current_state = state[target_name]
             if current_state == visiting:
-                cycle = " -> ".join([*trail, target_name])
+                cycle_members = (*trail, target_name)
+                cycle = " -> ".join(cycle_members)
                 msg = f"Cycle detected in recipe graph: {cycle}."
-                raise CycleError(msg)
+                raise CycleError(msg, cycle=cycle_members)
             if current_state == visited_state:
                 return
 
@@ -328,6 +342,133 @@ class RecipeBook:
             lines.append(f"{index}. {recipe.describe()}")
         return "\n".join(lines)
 
+    def to_mermaid(
+        self,
+        *,
+        targets: str | Sequence[str] | None = None,
+        available_inputs: Sequence[str] | set[str] | None = None,
+    ) -> str:
+        """Render the requested workflow graph as Mermaid flowchart text."""
+        graph = self._build_graph_view(targets=targets, available_inputs=available_inputs)
+        lines = [
+            "flowchart LR",
+            "    classDef step fill:#f4f1e8,stroke:#6b5b3e,color:#2d2418;",
+            "    classDef target fill:#e6f0ff,stroke:#315ea8,color:#15233f;",
+            "    classDef input fill:#eef7ea,stroke:#4f7a39,color:#1d3112;",
+            "    classDef missing fill:#fdebec,stroke:#ba3d4c,color:#4a1218;",
+            "    classDef requested fill:#fff0c2,stroke:#b18100,color:#5e4300;",
+        ]
+        lines.extend(
+            f'    {_node_id("input", input_name)}["{_escape_mermaid(input_name)}"]'
+            for input_name in graph.external_inputs
+        )
+
+        for index, recipe in enumerate(graph.order, start=1):
+            step_id = _step_node_id(index)
+            label = f"step {index}\\n{recipe.describe()}"
+            lines.append(f'    {step_id}{{{{"{_escape_mermaid(label)}"}}}}')
+        lines.extend(
+            f'    {_node_id("target", target_name)}["{_escape_mermaid(target_name)}"]'
+            for target_name in graph.produced_targets
+        )
+
+        for index, recipe in enumerate(graph.order, start=1):
+            step_id = _step_node_id(index)
+            dependencies = (*recipe.inputs.args, *recipe.inputs.kwargs.values())
+            lines.extend(
+                f"    {_dependency_node_id(graph, dependency.name)} --> {step_id}"
+                for dependency in dependencies
+            )
+            lines.extend(
+                f"    {step_id} --> {_node_id('target', target.name)}"
+                for target in recipe.targets
+            )
+        lines.extend(f"    class {_step_node_id(index)} step;" for index in range(1, len(graph.order) + 1))
+
+        for input_name in graph.external_inputs:
+            node_class = "missing" if input_name in graph.missing_inputs else "input"
+            lines.append(f"    class {_node_id('input', input_name)} {node_class};")
+
+        for target_name in graph.produced_targets:
+            node_class = "requested" if target_name in graph.requested_targets else "target"
+            lines.append(f"    class {_node_id('target', target_name)} {node_class};")
+
+        return "\n".join(lines)
+
+    def to_dot(
+        self,
+        *,
+        targets: str | Sequence[str] | None = None,
+        available_inputs: Sequence[str] | set[str] | None = None,
+    ) -> str:
+        """Render the requested workflow graph as Graphviz DOT text."""
+        graph = self._build_graph_view(targets=targets, available_inputs=available_inputs)
+        lines = [
+            "digraph DataCooker {",
+            '    rankdir="LR";',
+            '    graph [fontname="Helvetica"];',
+            '    node [fontname="Helvetica"];',
+            '    edge [fontname="Helvetica"];',
+        ]
+
+        for input_name in graph.external_inputs:
+            color = "#ba3d4c" if input_name in graph.missing_inputs else "#4f7a39"
+            lines.append(
+                f'    {_node_id("input", input_name)} '
+                f'[label="{_escape_dot(input_name)}", shape=ellipse, style=filled, '
+                f'fillcolor="#eef7ea", color="{color}"];'
+            )
+
+        for index, recipe in enumerate(graph.order, start=1):
+            step_id = _step_node_id(index)
+            label = f"step {index}\\n{recipe.describe()}"
+            lines.append(
+                f'    {step_id} [label="{_escape_dot(label)}", shape=box, '
+                'style="rounded,filled", fillcolor="#f4f1e8", color="#6b5b3e"];'
+            )
+
+        for target_name in graph.produced_targets:
+            shape = "doubleoctagon" if target_name in graph.requested_targets else "box"
+            fill = "#fff0c2" if target_name in graph.requested_targets else "#e6f0ff"
+            lines.append(
+                f'    {_node_id("target", target_name)} '
+                f'[label="{_escape_dot(target_name)}", shape={shape}, style=filled, '
+                f'fillcolor="{fill}", color="#315ea8"];'
+            )
+
+        for index, recipe in enumerate(graph.order, start=1):
+            step_id = _step_node_id(index)
+            dependencies = (*recipe.inputs.args, *recipe.inputs.kwargs.values())
+            lines.extend(
+                f"    {_dependency_node_id(graph, dependency.name)} -> {step_id};"
+                for dependency in dependencies
+            )
+            lines.extend(
+                f"    {step_id} -> {_node_id('target', target.name)};"
+                for target in recipe.targets
+            )
+
+        lines.append("}")
+        return "\n".join(lines)
+
+    def visualize(
+        self,
+        *,
+        output_format: str = "mermaid",
+        targets: str | Sequence[str] | None = None,
+        available_inputs: Sequence[str] | set[str] | None = None,
+    ) -> str:
+        """Render the workflow graph in a supported visualization format."""
+        if output_format == "mermaid":
+            return self.to_mermaid(targets=targets, available_inputs=available_inputs)
+        if output_format == "dot":
+            return self.to_dot(targets=targets, available_inputs=available_inputs)
+        msg = (
+            f"Unsupported visualization format '{output_format}'. "
+            "Expected 'mermaid' or 'dot'."
+        )
+        raise InvalidRecipeError(msg)
+
     def validate(
         self,
         *,
@@ -341,7 +482,12 @@ class RecipeBook:
             if missing_inputs:
                 missing = ", ".join(sorted(missing_inputs))
                 msg = f"Missing required workflow inputs: {missing}."
-                raise MissingDependencyError(msg)
+                raise MissingDependencyError(
+                    msg,
+                    dependency_name=sorted(missing_inputs)[0],
+                    dependency_chain=tuple(requested_targets),
+                    available_inputs=tuple(sorted(available_inputs)),
+                )
         self.execution_order(requested_targets)
 
     def _normalize_requested_targets(
@@ -368,8 +514,44 @@ class RecipeBook:
         for target_name in normalized:
             if target_name not in self:
                 msg = f"Target '{target_name}' is not declared in the recipe."
-                raise UnknownTargetError(msg)
+                raise UnknownTargetError(
+                    msg,
+                    target_name=target_name,
+                    available_targets=tuple(self.target_names()),
+                )
         return normalized
+
+    def _build_graph_view(
+        self,
+        *,
+        targets: str | Sequence[str] | None = None,
+        available_inputs: Sequence[str] | set[str] | None = None,
+    ) -> _GraphView:
+        requested_targets = tuple(self._normalize_requested_targets(targets))
+        order = tuple(self.execution_order(requested_targets))
+        produced_targets = tuple(
+            target.name for recipe in order for target in recipe.targets
+        )
+        produced_target_set = set(produced_targets)
+        external_inputs: set[str] = set()
+
+        for recipe in order:
+            for dependency in (*recipe.inputs.args, *recipe.inputs.kwargs.values()):
+                if dependency.name not in produced_target_set:
+                    external_inputs.add(dependency.name)
+
+        missing_inputs = (
+            frozenset(self.missing_inputs(available_inputs, requested_targets))
+            if available_inputs is not None
+            else frozenset()
+        )
+        return _GraphView(
+            requested_targets=requested_targets,
+            produced_targets=produced_targets,
+            external_inputs=tuple(sorted(external_inputs)),
+            missing_inputs=missing_inputs,
+            order=order,
+        )
 
 
 def _is_raw_variable(value: object) -> TypeGuard[RawVariable]:
@@ -421,3 +603,39 @@ def _allows_none(annotation: object) -> bool:
 
 def _is_wildcard_pattern(name: str) -> bool:
     return any(char in name for char in "*?[")
+
+
+@dataclass(frozen=True, slots=True)
+class _GraphView:
+    requested_targets: tuple[str, ...]
+    produced_targets: tuple[str, ...]
+    external_inputs: tuple[str, ...]
+    missing_inputs: frozenset[str]
+    order: tuple[Recipe, ...]
+
+
+def _callable_name(instruction: Callable[..., Any]) -> str:
+    return getattr(instruction, "__name__", type(instruction).__name__)
+
+
+def _escape_mermaid(text: str) -> str:
+    return text.replace('"', '\\"')
+
+
+def _escape_dot(text: str) -> str:
+    return text.replace('"', '\\"')
+
+
+def _node_id(kind: str, name: str) -> str:
+    safe_name = "".join(char if char.isalnum() else "_" for char in name)
+    return f"{kind}_{safe_name}"
+
+
+def _step_node_id(index: int) -> str:
+    return f"step_{index}"
+
+
+def _dependency_node_id(graph: _GraphView, dependency_name: str) -> str:
+    if dependency_name in graph.produced_targets:
+        return _node_id("target", dependency_name)
+    return _node_id("input", dependency_name)

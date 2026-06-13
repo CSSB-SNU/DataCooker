@@ -16,6 +16,7 @@ from .api import (
     parse_dict,
     parse_file,
     rebuild,
+    visualize,
 )
 from .cache import ExecutionContext, ParsingCache
 from .core import (
@@ -29,9 +30,11 @@ from .errors import (
     CycleError,
     DataCookerError,
     DuplicateTargetError,
+    InstructionOutputError,
     InvalidRecipeError,
     MissingDependencyError,
     MissingTargetError,
+    StepExecutionError,
     UnknownTargetError,
 )
 from .recipe import Inputs, Recipe, RecipeBook, RecipeError, Variable, variable
@@ -44,6 +47,7 @@ __all__ = [
     "DuplicateTargetError",
     "ExecutionContext",
     "Inputs",
+    "InstructionOutputError",
     "InvalidRecipeError",
     "LoadFunc",
     "MissingDependencyError",
@@ -52,6 +56,7 @@ __all__ = [
     "Recipe",
     "RecipeBook",
     "RecipeError",
+    "StepExecutionError",
     "TransformFunc",
     "UnknownTargetError",
     "Variable",
@@ -64,4 +69,5 @@ __all__ = [
     "parse_file",
     "rebuild",
     "variable",
+    "visualize",
 ]

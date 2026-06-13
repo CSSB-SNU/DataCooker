@@ -11,9 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from datacooker import (
     CycleError,
     Inputs,
+    InstructionOutputError,
     MissingDependencyError,
     Recipe,
     RecipeBook,
+    StepExecutionError,
     UnknownTargetError,
     Variable,
     describe,
@@ -22,6 +24,7 @@ from datacooker import (
     parse_dict,
     parse_file,
     variable,
+    visualize,
 )
 
 
@@ -236,6 +239,44 @@ class DataCookerCoreTests(unittest.TestCase):
         self.assertIn("1. sum <- a, b", summary)
         self.assertIn("2. label <- sum, prefix=prefix", summary)
 
+    def test_visualize_mermaid_renders_step_graph(self) -> None:
+        recipe = (
+            RecipeBook()
+            .step(
+                outputs=variable("sum", int),
+                instruction=lambda a, b: a + b,
+                args=[variable("a", int), variable("b", int)],
+            )
+            .step(
+                outputs=variable("label", str),
+                instruction=lambda total: f"sum={total}",
+                args=[variable("sum", int)],
+            )
+            .set_default_targets("label")
+        )
+
+        rendered = visualize(recipe, available_inputs={"a", "b"})
+
+        self.assertIn("flowchart LR", rendered)
+        self.assertIn('step_1{{"step 1\\nsum <- a, b"}}', rendered)
+        self.assertIn('step_2{{"step 2\\nlabel <- sum"}}', rendered)
+        self.assertIn("target_sum --> step_2", rendered)
+        self.assertIn("class target_label requested;", rendered)
+
+    def test_visualize_dot_renders_requested_targets(self) -> None:
+        recipe = RecipeBook().step(
+            outputs=variable("sum", int),
+            instruction=lambda a, b: a + b,
+            args=[variable("a", int), variable("b", int)],
+        )
+
+        rendered = recipe.to_dot(targets="sum", available_inputs={"a"})
+
+        self.assertIn("digraph DataCooker {", rendered)
+        self.assertIn('target_sum [label="sum", shape=doubleoctagon', rendered)
+        self.assertIn('input_b [label="b", shape=ellipse, style=filled', rendered)
+        self.assertIn('color="#ba3d4c"', rendered)
+
     def test_execution_order_is_dependency_sorted(self) -> None:
         recipe = RecipeBook()
         recipe.step(
@@ -277,6 +318,52 @@ class DataCookerCoreTests(unittest.TestCase):
             inputs=Inputs(args=(variable("value", int),)),
         )
         self.assertEqual(recipe.describe(), "out <- value")
+
+    def test_missing_dependency_error_exposes_context(self) -> None:
+        recipe = RecipeBook().step(
+            outputs=variable("sum", int),
+            instruction=lambda a, b: a + b,
+            args=[variable("a", int), variable("b", int)],
+        )
+
+        with self.assertRaises(MissingDependencyError) as caught:
+            execute(recipe, {"a": 1})
+
+        error = caught.exception
+        self.assertEqual(error.dependency_name, "b")
+        self.assertEqual(error.available_inputs, ("a",))
+        self.assertEqual(error.dependency_chain, ("sum",))
+
+    def test_step_execution_error_wraps_original_exception(self) -> None:
+        recipe = RecipeBook().step(
+            outputs=variable("sum", int),
+            instruction=lambda _a: 1 / 0,
+            args=[variable("a", int)],
+        )
+
+        with self.assertRaises(StepExecutionError) as caught:
+            execute(recipe, {"a": 1})
+
+        error = caught.exception
+        self.assertEqual(error.target_name, "sum")
+        self.assertEqual(error.step_description, "sum <- a")
+        self.assertEqual(error.dependency_chain, ("sum",))
+        self.assertEqual(type(error.original_exception), ZeroDivisionError)
+
+    def test_instruction_output_error_exposes_expected_shape(self) -> None:
+        recipe = RecipeBook().step(
+            outputs=(variable("left", int), variable("right", int)),
+            instruction=lambda value: value,
+            args=[variable("value", int)],
+        )
+
+        with self.assertRaises(InstructionOutputError) as caught:
+            execute(recipe, {"value": 3})
+
+        error = caught.exception
+        self.assertEqual(error.produced_targets, ("left", "right"))
+        self.assertEqual(error.expected_output_count, 2)
+        self.assertIsNone(error.actual_output_count)
 
 
 if __name__ == "__main__":

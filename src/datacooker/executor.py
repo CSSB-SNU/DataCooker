@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import fnmatch
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, get_args, overload
+from typing import TYPE_CHECKING, Any, get_args, overload
 
 from .cache import ParsingCache
 from .errors import (
     CycleError,
+    InstructionOutputError,
     MissingDependencyError,
     MissingTargetError,
+    StepExecutionError,
     UnknownTargetError,
 )
 from .loading import load_recipe, normalize_targets
 from .recipe import RecipeBook
+
+if TYPE_CHECKING:
+    from .recipe import Recipe
 
 
 class Cooker:
@@ -85,6 +90,7 @@ class Cooker:
             )
 
         active_targets: set[str] = set()
+        resolution_stack: list[str] = []
 
         def resolve(target_name: str, target_type: object) -> object:
             if target_name in self.parse_cache:
@@ -93,52 +99,30 @@ class Cooker:
             if target_name not in self.recipebook:
                 if type(None) in get_args(target_type):
                     return None
-                msg = f"Required dependency '{target_name}' is not available."
-                raise MissingDependencyError(msg)
+                raise self._missing_dependency_error(target_name, resolution_stack)
 
             if target_name in active_targets:
-                msg = f"Cycle detected while resolving '{target_name}'."
-                raise CycleError(msg)
+                raise self._cycle_error(target_name, resolution_stack)
 
             active_targets.add(target_name)
+            resolution_stack.append(target_name)
             recipe = self.recipebook[target_name]
 
-            resolved_args: list[Any] = []
-            for variable in recipe.inputs.args:
-                if _is_wildcard_pattern(variable.name):
-                    resolved_args.extend(self._expand_wildcard_args(variable.name))
-                else:
-                    resolved_args.append(resolve(variable.name, variable.type))
-
-            resolved_kwargs = {
-                key: resolve(variable.name, variable.type)
-                for key, variable in recipe.inputs.kwargs.items()
-            }
-            final_kwargs = {**recipe.inputs.params, **resolved_kwargs}
-            result = recipe.instruction(*resolved_args, **final_kwargs)
-
             try:
-                produced_targets = [variable.name for variable in recipe.targets]
-                if len(produced_targets) == 1:
-                    self.parse_cache.add_data(produced_targets[0], result)
-                    return result
-
-                if not isinstance(result, tuple) or len(result) != len(produced_targets):
-                    msg = (
-                        f"Instruction for targets {produced_targets} returned {type(result)}, "
-                        f"but a tuple of length {len(produced_targets)} was expected."
-                    )
-                    raise ValueError(msg)
-
-                resolved_output: object | None = None
-                for produced_name, produced_value in zip(
-                    produced_targets, result, strict=True
-                ):
-                    self.parse_cache.add_data(produced_name, produced_value)
-                    if produced_name == target_name:
-                        resolved_output = produced_value
-                return resolved_output
+                resolved_args, resolved_kwargs = self._resolve_recipe_arguments(
+                    recipe,
+                    resolve,
+                )
+                result = self._invoke_recipe(
+                    recipe,
+                    target_name,
+                    resolution_stack,
+                    resolved_args,
+                    resolved_kwargs,
+                )
+                return self._store_recipe_result(recipe, target_name, result)
             finally:
+                resolution_stack.pop()
                 active_targets.remove(target_name)
 
         for requested_target in requested_targets:
@@ -151,7 +135,12 @@ class Cooker:
         for target_name in requested_targets:
             if target_name not in self.parse_cache:
                 msg = f"Target '{target_name}' was not produced during execution."
-                raise MissingTargetError(msg)
+                raise MissingTargetError(
+                    msg,
+                    target_name=target_name,
+                    requested_targets=tuple(requested_targets),
+                    available_outputs=tuple(sorted(self.parse_cache.keys())),
+                )
             results[target_name] = self.parse_cache[target_name]
         return results
 
@@ -177,7 +166,11 @@ class Cooker:
         for target_name in requested_targets:
             if target_name not in self.recipebook:
                 msg = f"Target '{target_name}' is not declared in the recipe."
-                raise UnknownTargetError(msg)
+                raise UnknownTargetError(
+                    msg,
+                    target_name=target_name,
+                    available_targets=tuple(self.recipebook.target_names()),
+                )
         return requested_targets
 
     def _target_type(self, target_name: str) -> object:
@@ -186,6 +179,102 @@ class Cooker:
             for variable in self.recipebook.targets()
             if variable.name == target_name
         )
+
+    def _missing_dependency_error(
+        self,
+        dependency_name: str,
+        resolution_stack: Sequence[str],
+    ) -> MissingDependencyError:
+        message = f"Required dependency '{dependency_name}' is not available."
+        return MissingDependencyError(
+            message,
+            dependency_name=dependency_name,
+            requesting_target=resolution_stack[-1] if resolution_stack else None,
+            dependency_chain=(*resolution_stack, dependency_name),
+            available_inputs=tuple(sorted(self.parse_cache.keys())),
+        )
+
+    def _cycle_error(
+        self,
+        target_name: str,
+        resolution_stack: Sequence[str],
+    ) -> CycleError:
+        message = f"Cycle detected while resolving '{target_name}'."
+        return CycleError(message, cycle=(*resolution_stack, target_name))
+
+    def _resolve_recipe_arguments(
+        self,
+        recipe: Recipe,
+        resolve: Callable[[str, object], object],
+    ) -> tuple[list[Any], dict[str, Any]]:
+        resolved_args: list[Any] = []
+        for variable in recipe.inputs.args:
+            if _is_wildcard_pattern(variable.name):
+                resolved_args.extend(self._expand_wildcard_args(variable.name))
+            else:
+                resolved_args.append(resolve(variable.name, variable.type))
+
+        resolved_kwargs = {
+            key: resolve(variable.name, variable.type)
+            for key, variable in recipe.inputs.kwargs.items()
+        }
+        final_kwargs = {**recipe.inputs.params, **resolved_kwargs}
+        return resolved_args, final_kwargs
+
+    def _invoke_recipe(
+        self,
+        recipe: Recipe,
+        target_name: str,
+        resolution_stack: Sequence[str],
+        resolved_args: Sequence[Any],
+        resolved_kwargs: Mapping[str, Any],
+    ) -> object:
+        try:
+            return recipe.instruction(*resolved_args, **resolved_kwargs)
+        except Exception as exc:
+            msg = (
+                f"Instruction '{recipe.instruction_name}' failed while producing "
+                f"target '{target_name}'."
+            )
+            raise StepExecutionError(
+                msg,
+                target_name=target_name,
+                step_description=recipe.describe(),
+                dependency_chain=tuple(resolution_stack),
+                instruction_name=recipe.instruction_name,
+                original_exception=exc,
+            ) from exc
+
+    def _store_recipe_result(
+        self,
+        recipe: Recipe,
+        target_name: str,
+        result: object,
+    ) -> object:
+        produced_targets = [variable.name for variable in recipe.targets]
+        if len(produced_targets) == 1:
+            self.parse_cache.add_data(produced_targets[0], result)
+            return result
+
+        if not isinstance(result, tuple) or len(result) != len(produced_targets):
+            msg = (
+                f"Instruction for targets {produced_targets} returned {type(result)}, "
+                f"but a tuple of length {len(produced_targets)} was expected."
+            )
+            raise InstructionOutputError(
+                msg,
+                produced_targets=tuple(produced_targets),
+                actual_value=result,
+                expected_output_count=len(produced_targets),
+                actual_output_count=len(result) if isinstance(result, tuple) else None,
+            )
+
+        resolved_output: object | None = None
+        for produced_name, produced_value in zip(produced_targets, result, strict=True):
+            self.parse_cache.add_data(produced_name, produced_value)
+            if produced_name == target_name:
+                resolved_output = produced_value
+        return resolved_output
 
 
 def _is_wildcard_pattern(name: str) -> bool:

@@ -44,6 +44,23 @@ def describe(
     )
 
 
+def visualize(
+    recipebook: RecipeBook | str | Path,
+    *,
+    output_format: str = "mermaid",
+    targets: Sequence[str] | str | None = None,
+    available_inputs: Sequence[str] | set[str] | None = None,
+) -> str:
+    """Render a workflow graph in Mermaid or DOT format."""
+    loaded_recipe, default_targets = load_recipe(recipebook)
+    resolved_targets = default_targets if targets is None else targets
+    return loaded_recipe.visualize(
+        output_format=output_format,
+        targets=resolved_targets,
+        available_inputs=available_inputs,
+    )
+
+
 def parse_file(
     recipe_path: RecipeBook | str | Path,
     file_path: Path,
