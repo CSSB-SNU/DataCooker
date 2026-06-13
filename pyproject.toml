@@ -21,6 +21,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+config = [
+    "omegaconf>=2.3.0,<3",
+]
+cli = [
+    "click>=8.1.0,<9",
+    "omegaconf>=2.3.0,<3",
+]
 lmdb = [
     "joblib>=1.4.0,<2",
     "lmdb>=1.6.0,<2",
@@ -28,6 +35,10 @@ lmdb = [
 parallel = [
     "joblib>=1.4.0,<2",
 ]
+
+[project.scripts]
+datacooker-lmdb = "datacooker.cli.lmdb:main"
+datacooker-workflow = "datacooker.cli.workflow:main"
 
 [project.urls]
 Homepage = "https://github.com/CSSB-SNU/DataCooker"

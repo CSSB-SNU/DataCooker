@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
-from .batch import parallel_process
+from .batch import (
+    BatchProcessReport,
+    BatchProcessResult,
+    parallel_process,
+    parallel_process_report,
+)
 
-__all__ = ["parallel_process"]
+__all__ = [
+    "BatchProcessReport",
+    "BatchProcessResult",
+    "parallel_process",
+    "parallel_process_report",
+]

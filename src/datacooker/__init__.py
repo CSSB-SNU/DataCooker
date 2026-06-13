@@ -32,10 +32,18 @@ from .errors import (
 )
 from .executor import Cooker
 from .loading import load_recipe
+from .orchestration import (
+    extract_lmdb_workflow,
+    run_parallel_workflow,
+    run_workflow,
+)
+from .processing import BatchProcessReport, BatchProcessResult, parallel_process_report
 from .protocols import (
     ConvertFunc,
     DeserializeFunc,
+    KeyFunc,
     LoadFunc,
+    ProjectFunc,
     SerializeFunc,
     TransformFunc,
 )
@@ -45,6 +53,8 @@ from .utils.paths import scan_paths
 from .utils.sharding import resolve_node_config, shard_items
 
 __all__ = [
+    "BatchProcessReport",
+    "BatchProcessResult",
     "ConvertFunc",
     "Cooker",
     "CycleError",
@@ -55,10 +65,12 @@ __all__ = [
     "Inputs",
     "InstructionOutputError",
     "InvalidRecipeError",
+    "KeyFunc",
     "LoadFunc",
     "MissingDependencyError",
     "MissingTargetError",
     "ParsingCache",
+    "ProjectFunc",
     "Recipe",
     "RecipeBook",
     "RecipeError",
@@ -70,13 +82,17 @@ __all__ = [
     "__version__",
     "describe",
     "execute",
+    "extract_lmdb_workflow",
     "load_recipe",
+    "parallel_process_report",
     "parse",
     "parse_dict",
     "parse_file",
     "rebuild",
     "resolve_node_config",
     "resolve_object",
+    "run_parallel_workflow",
+    "run_workflow",
     "scan_paths",
     "shard_items",
     "variable",

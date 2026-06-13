@@ -171,7 +171,14 @@ packages:
 - pypi: .
   name: datacooker
   version: 0.1.0
-  sha256: 4df87f964e6867c58bf2031eac30812f1788f95ecbf18265690be110e9b6fecb
+  sha256: 650305ce21e0d93760642941d59a667d9b1fe23e8769cf6cf9d9d2fc06423522
+  requires_dist:
+  - omegaconf>=2.3.0,<3 ; extra == 'config'
+  - click>=8.1.0,<9 ; extra == 'cli'
+  - omegaconf>=2.3.0,<3 ; extra == 'cli'
+  - joblib>=1.4.0,<2 ; extra == 'lmdb'
+  - lmdb>=1.6.0,<2 ; extra == 'lmdb'
+  - joblib>=1.4.0,<2 ; extra == 'parallel'
   requires_python: '>=3.10'
   editable: true
 - conda: https://conda.anaconda.org/conda-forge/linux-64/debugpy-1.8.21-py313h5d5ffb9_0.conda

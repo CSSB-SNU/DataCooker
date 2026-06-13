@@ -57,6 +57,8 @@ pip install -e .
 Optional integration layers are installed separately:
 
 ```bash
+pip install -e .[config]
+pip install -e .[cli]
 pip install -e .[parallel]
 pip install -e .[lmdb]
 ```
@@ -223,7 +225,32 @@ Integration namespaces are imported explicitly:
 
 - `datacooker.lmdb`: generic LMDB workflow helpers and write reports
 - `datacooker.processing`: joblib-backed batch helpers
+- `datacooker.config`: OmegaConf-based config loading for downstream apps
 - `datacooker.utils`: dotted import, path scan, and sharding helpers
+
+Higher-level orchestration wrappers are also available when you want to keep
+workflow code inside Python but move config-driven boilerplate out of
+downstream projects:
+
+- `run_workflow(...)`
+- `run_parallel_workflow(...)`
+- `extract_lmdb_workflow(...)`
+
+`run_parallel_workflow(...)` returns a `BatchProcessReport` with structured
+counts plus per-item outputs and errors, while the historical
+`parallel_process(...)` helper keeps its older list-of-tuples return shape for
+backward compatibility.
+
+Optional CLI entrypoints mirror those wrappers:
+
+```bash
+datacooker-workflow run config.yaml
+datacooker-workflow parallel-run config.yaml
+datacooker-workflow extract-lmdb config.yaml
+datacooker-lmdb build config.yaml
+datacooker-lmdb rebuild config.yaml
+datacooker-lmdb merge "/path/to/shard*.lmdb" --output merged.lmdb
+```
 
 ## Current Guarantees
 

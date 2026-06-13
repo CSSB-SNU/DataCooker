@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from os import PathLike
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -44,4 +45,25 @@ class DeserializeFunc(Protocol):
 
     def __call__(self, payload: bytes) -> dict[str, Any]:
         """Deserialize a workflow output dictionary."""
+        ...
+
+
+class ProjectFunc(Protocol):
+    """Protocol for projection functions that materialize workflow results."""
+
+    def __call__(
+        self,
+        *,
+        data: dict[str, Any],
+        output_path: PathLike[str] | str | Path,
+    ) -> None:
+        """Materialize workflow results to an external destination."""
+        ...
+
+
+class KeyFunc(Protocol):
+    """Protocol for deriving database keys from filesystem paths."""
+
+    def __call__(self, path: Path) -> str:
+        """Return the database key for a given file path."""
         ...

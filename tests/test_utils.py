@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import textwrap
 import unittest
 from importlib.util import find_spec
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from datacooker.lmdb import (
     LmdbWriteReport,
@@ -20,7 +23,7 @@ from datacooker.lmdb import (
     read_lmdb_raw,
     rebuild_lmdb,
 )
-from datacooker.processing import parallel_process
+from datacooker.processing import parallel_process, parallel_process_report
 from datacooker.utils import (
     resolve_node_config,
     resolve_object,
@@ -290,3 +293,38 @@ class DataCookerUtilsTests(unittest.TestCase):
             )
 
             self.assertEqual(results, [({"double": 5}, None), ({"double": 11}, None)])
+
+    @unittest.skipUnless(JOBLIB_AVAILABLE, "joblib is not installed in this environment")
+    def test_parallel_process_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            recipe_path = root / "recipe_mod.py"
+            recipe_path.write_text(
+                textwrap.dedent(
+                    """
+                    from datacooker import RecipeBook, variable
+
+                    RECIPE = RecipeBook().step(
+                        outputs=variable("double", int),
+                        instruction=lambda value: value * 2,
+                        args=[variable("value", int)],
+                    )
+                    """
+                )
+            )
+
+            report = parallel_process_report(
+                [{"value": 2}, {"value": 5}],
+                inputs=None,
+                recipe=recipe_path,
+                n_jobs=1,
+                chunk_size=1,
+                test_run=False,
+            )
+
+            self.assertEqual(report.total, 2)
+            self.assertEqual(report.assigned, 2)
+            self.assertEqual(report.attempted, 2)
+            self.assertEqual(report.succeeded, 2)
+            self.assertEqual(report.failed, 0)
+            self.assertEqual(report.outputs(), [{"double": 4}, {"double": 10}])
