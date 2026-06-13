@@ -171,7 +171,7 @@ packages:
 - pypi: .
   name: datacooker
   version: 0.1.0
-  sha256: 7bf80dff4be191e212ed249ff0df7ef7b982d2095c9a557ae2b4b6fed2e32d35
+  sha256: 4df87f964e6867c58bf2031eac30812f1788f95ecbf18265690be110e9b6fecb
   requires_python: '>=3.10'
   editable: true
 - conda: https://conda.anaconda.org/conda-forge/linux-64/debugpy-1.8.21-py313h5d5ffb9_0.conda

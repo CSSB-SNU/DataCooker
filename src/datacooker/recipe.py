@@ -1,6 +1,13 @@
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, TypeAlias, overload
+from typing import Any, TypeAlias, get_args
+
+from .errors import (
+    CycleError,
+    DuplicateTargetError,
+    MissingDependencyError,
+    UnknownTargetError,
+)
 
 
 @dataclass(frozen=True)
@@ -15,7 +22,7 @@ VariableSet: TypeAlias = tuple[Variable, ...]
 VariableMap: TypeAlias = Mapping[str, Variable]
 
 RawVariableSet: TypeAlias = tuple[tuple[str, type[Any]], ...]
-RawVariableMap: TypeAlias = Mapping[str, tuple[str, type]]
+RawVariableMap: TypeAlias = Mapping[str, tuple[str, type[Any]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,12 +57,11 @@ class RecipeBook:
         for target in targets:
             if target.name in self:
                 msg = f"Target '{target.name}' is already defined in the recipe."
-                raise ValueError(msg)
+                raise DuplicateTargetError(msg)
 
     def _coerce_to_variable_set(self, varset: RawVariableSet | None) -> VariableSet:
         if not varset:
             return ()
-        tuple(Variable(*t) for t in varset)
         return tuple(Variable(*t) for t in varset)
 
     def _coerce_to_variable_map(self, varset: RawVariableMap | None) -> VariableMap:
@@ -83,29 +89,17 @@ class RecipeBook:
         )
         self.steps.append(step)
 
-    @overload
     def add(
         self,
-        targets: RawVariableSet,
+        targets: RawVariableSet | list[RawVariableSet],
         instruction: Callable,
-        inputs: dict[str, Any],
-    ) -> "RecipeBook": ...
-    @overload
-    def add(
-        self,
-        targets: list[RawVariableSet],
-        instruction: Callable,
-        inputs: list[dict[str, Any]],
-    ) -> "RecipeBook": ...
-
-    def add(
-        self,
-        targets: Any,
-        instruction: Callable,
-        inputs: Any,
+        inputs: dict[str, Any] | list[dict[str, Any]],
     ) -> "RecipeBook":
         """Add a new step to the recipe."""
-        if isinstance(targets, list) and isinstance(inputs, list):
+        if isinstance(targets, list):
+            if not isinstance(inputs, list):
+                msg = "Targets and inputs must both be scalars or both be lists."
+                raise TypeError(msg)
             if len(targets) != len(inputs):
                 msg = (
                     "When providing lists of targets and inputs, "
@@ -114,9 +108,13 @@ class RecipeBook:
                 raise ValueError(msg)
             for targetset, input_bundle in zip(targets, inputs, strict=True):
                 self._single_add(targetset, instruction, input_bundle)
+            return self
 
-        else:
-            self._single_add(targets, instruction, inputs)
+        if isinstance(inputs, list):
+            msg = "Targets and inputs must both be scalars or both be lists."
+            raise TypeError(msg)
+
+        self._single_add(targets, instruction, inputs)
 
         return self
 
@@ -139,3 +137,116 @@ class RecipeBook:
         for step in self.steps:
             all_targets.extend(list(step.targets))
         return all_targets
+
+    def target_names(self) -> list[str]:
+        """Return the declared output target names in declaration order."""
+        return [target.name for target in self.targets()]
+
+    def dependencies(self, target_name: str) -> tuple[Variable, ...]:
+        """Return the direct dependencies for a given target."""
+        recipe = self[target_name]
+        return (*recipe.inputs.args, *recipe.inputs.kwargs.values())
+
+    def required_inputs(self, targets: str | list[str] | None = None) -> set[str]:
+        """Return unresolved external inputs required for the requested targets."""
+        requested_targets = self._normalize_requested_targets(targets)
+        required: set[str] = set()
+        visited: set[str] = set()
+
+        def walk(target_name: str) -> None:
+            if target_name in visited:
+                return
+            visited.add(target_name)
+            for dependency in self.dependencies(target_name):
+                if _is_wildcard_pattern(dependency.name):
+                    continue
+                if dependency.name in self:
+                    walk(dependency.name)
+                elif not _allows_none(dependency.type):
+                    required.add(dependency.name)
+
+        for target_name in requested_targets:
+            walk(target_name)
+        return required
+
+    def validate(
+        self,
+        *,
+        available_inputs: set[str] | None = None,
+        targets: str | list[str] | None = None,
+    ) -> None:
+        """Validate the static workflow graph and its reachable dependencies."""
+        requested_targets = self._normalize_requested_targets(targets)
+        adjacency: dict[str, set[str]] = {name: set() for name in requested_targets}
+        visited: set[str] = set()
+
+        def build_graph(target_name: str) -> None:
+            if target_name in visited:
+                return
+            visited.add(target_name)
+            adjacency.setdefault(target_name, set())
+            for dependency in self.dependencies(target_name):
+                if _is_wildcard_pattern(dependency.name):
+                    continue
+                if dependency.name in self:
+                    adjacency[target_name].add(dependency.name)
+                    build_graph(dependency.name)
+
+        for target_name in requested_targets:
+            build_graph(target_name)
+
+        if available_inputs is not None:
+            missing_inputs = self.required_inputs(requested_targets) - set(available_inputs)
+            if missing_inputs:
+                missing = ", ".join(sorted(missing_inputs))
+                msg = f"Missing required workflow inputs: {missing}."
+                raise MissingDependencyError(msg)
+
+        not_visited = 0
+        visiting = 1
+        visited_state = 2
+        state = dict.fromkeys(adjacency, not_visited)
+        trail: list[str] = []
+
+        def visit(target_name: str) -> None:
+            current_state = state[target_name]
+            if current_state == visiting:
+                cycle = " -> ".join([*trail, target_name])
+                msg = f"Cycle detected in recipe graph: {cycle}."
+                raise CycleError(msg)
+            if current_state == visited_state:
+                return
+            state[target_name] = visiting
+            trail.append(target_name)
+            for dependency_name in adjacency[target_name]:
+                visit(dependency_name)
+            trail.pop()
+            state[target_name] = visited_state
+
+        for target_name in requested_targets:
+            visit(target_name)
+
+    def _normalize_requested_targets(
+        self,
+        targets: str | list[str] | None = None,
+    ) -> list[str]:
+        if targets is None:
+            requested_targets = self.target_names()
+        elif isinstance(targets, str):
+            requested_targets = [targets]
+        else:
+            requested_targets = list(targets)
+
+        for target_name in requested_targets:
+            if target_name not in self:
+                msg = f"Target '{target_name}' is not declared in the recipe."
+                raise UnknownTargetError(msg)
+        return requested_targets
+
+
+def _allows_none(annotation: object) -> bool:
+    return type(None) in get_args(annotation)
+
+
+def _is_wildcard_pattern(name: str) -> bool:
+    return any(char in name for char in "*?[")

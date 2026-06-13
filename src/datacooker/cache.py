@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Any, Callable
+    from collections.abc import Callable, Iterator, Sequence
 
 
 class ParsingCache:
     """
-    Store necessary parsing input & temporary output while parsing a data.
+    Store execution inputs and intermediate outputs for a workflow run.
 
     This cache uses a key_transform function to interpret string keys.
     By default it treats keys as flat strings, but custom transforms
@@ -18,13 +18,13 @@ class ParsingCache:
 
     def __init__(
         self,
-        key_transform: Callable[[str], tuple[str, ...]] | None = None,
+        key_transform: Callable[[str], Sequence[str]] | None = None,
     ) -> None:
         self._storage: dict[str, Any] = {}
         if key_transform is None:
             self._key_transform = lambda k: (k,)
         else:
-            self._key_transform = key_transform
+            self._key_transform = lambda k: tuple(key_transform(k))
 
     def add_data(self, name: str, data: object) -> None:
         """Store Data with a given name."""
@@ -61,6 +61,12 @@ class ParsingCache:
             cur = cur[part]
         return cur
 
+    def get(self, name: str, default: object = None) -> object:
+        """Get data by name, returning a default when the key is missing."""
+        if name in self:
+            return self[name]
+        return default
+
     def keys(self) -> list[str]:
         """Return a list of all keys (flattened back to strings)."""
         result: list[str] = []
@@ -75,3 +81,10 @@ class ParsingCache:
 
         _collect(self._storage)
         return result
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over flattened keys stored in the cache."""
+        return iter(self.keys())
+
+
+ExecutionContext = ParsingCache

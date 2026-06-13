@@ -22,12 +22,22 @@ ignore = [
     "D100", # Missing docstring in public module
     "D104", # Missing docstring in public package
     "C901",
+    "COM812", # Formatter-compatible trailing comma handling
     "N806",
     "E501",
+    "ANN401", # Public API accepts arbitrary workflow payloads
+    "FBT001", # Compatibility wrappers expose simple boolean flags
+    "FBT002",
+    "PLR0913", # Public compatibility APIs are intentionally wide
+    "TC001", # Postponed evaluation makes runtime imports acceptable here
+    "TC003",
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["D", "PT009", "PT027"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]

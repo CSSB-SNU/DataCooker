@@ -4,5 +4,5 @@ logs/
 .pixi/
 __pycache__/
 *.pyc
-test*
+test.py
 *.cif
