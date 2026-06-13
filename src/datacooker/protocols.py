@@ -29,3 +29,19 @@ class ConvertFunc(Protocol):
     def __call__(self, data: dict[str, Any]) -> dict[str, Any]:
         """Convert an input data dictionary into another data dictionary."""
         ...
+
+
+class SerializeFunc(Protocol):
+    """Protocol for converting workflow data into database bytes."""
+
+    def __call__(self, data: dict[str, Any]) -> bytes:
+        """Serialize a workflow output dictionary."""
+        ...
+
+
+class DeserializeFunc(Protocol):
+    """Protocol for converting database bytes into workflow data."""
+
+    def __call__(self, payload: bytes) -> dict[str, Any]:
+        """Deserialize a workflow output dictionary."""
+        ...

@@ -14,6 +14,7 @@ This repository intentionally keeps only reusable workflow primitives:
 - `parse_dict()` and `parse_file()` as convenience wrappers
 - `describe()` for workflow introspection and debugging
 - `visualize()` for Mermaid and Graphviz graph rendering
+- `datacooker.utils.db` for recipe-driven LMDB build/rebuild/read flows
 
 Domain-specific pipelines, IO loaders, model calls, and data products are
 expected to live in downstream repositories.
@@ -124,6 +125,22 @@ Graphviz DOT is also supported:
 print(visualize(recipe, output_format="dot", available_inputs={"a", "b"}))
 ```
 
+## Database Utilities
+
+`DataCooker` also ships reusable LMDB workflow helpers under
+`datacooker.utils.db`.
+
+They cover:
+
+- building an LMDB from raw files plus a recipe
+- rebuilding an LMDB through another recipe
+- reading decoded entries
+- merging shard databases
+- listing keys
+
+Serialization stays downstream-specific through callbacks, so domain projects
+can keep their own byte format while reusing the workflow orchestration layer.
+
 ## File-Based Recipes
 
 Recipe modules can expose:
@@ -154,6 +171,8 @@ result = parse_dict(Path("my_recipe.py"), {"a": 1, "b": 2})
 - `parse_dict`, `parse_file`: convenience wrappers
 - `load_recipe`: load `RECIPE` / `TARGETS` from a module path
 - `ExecutionContext`: runtime key-value store
+- `datacooker.utils.db`: generic LMDB workflow helpers
+- `datacooker.utils.sharding`: node-rank aware sharding helpers
 - `Variable`, `Inputs`, `Recipe`, `variable`: typed declaration helpers
 - `MissingDependencyError`, `StepExecutionError`, `InstructionOutputError`: structured runtime diagnostics
 

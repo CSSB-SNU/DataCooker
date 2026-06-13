@@ -17,7 +17,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = []
+dependencies = [
+    "joblib>=1.4.0,<2",
+    "lmdb>=1.6.0,<2",
+]
 
 [project.urls]
 Homepage = "https://github.com/CSSB-SNU/DataCooker"
