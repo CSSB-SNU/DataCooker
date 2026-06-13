@@ -10,7 +10,7 @@ from .recipe import RecipeBook
 
 class Cooker:
     """
-    Process input datas through a series of defined recipes.
+    Process input data through a series of declared recipe steps.
 
     Args:
     parse_cache: An instance of ParsingCache to store intermediate and final results.
@@ -187,7 +187,7 @@ def parse(
     targets: list[str] | None = None,
     **extra_kwargs: Mapping[str, Any],
 ) -> dict:
-    """Parse a CIF file using a predefined recipe."""
+    """Load input data, execute a recipe, and return the requested targets."""
     datadict = load_func(file_path)
     datadict.update(extra_kwargs)
     parse_cache = ParsingCache(transform_func)
@@ -204,7 +204,7 @@ def rebuild(
     targets: list[str] | None = None,
     **extra_kwargs: Mapping[str, Any],
 ) -> dict:
-    """Parse a CIF file using a predefined recipe."""
+    """Execute a recipe against an in-memory data dictionary."""
     datadict.update(extra_kwargs)
     parse_cache = ParsingCache(transform_func)
     cooker = Cooker(parse_cache=parse_cache, recipebook=str(recipe_path))
