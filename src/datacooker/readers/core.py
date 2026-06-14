@@ -11,13 +11,71 @@ from datacooker.protocols import ConvertFunc, DeserializeFunc, LoadFunc, Transfo
 
 
 @dataclass(frozen=True, slots=True)
+class InputHooks:
+    """The file-input boundary: turn a path into a workflow input dict."""
+
+    loader: LoadFunc | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PayloadHooks:
+    """The payload boundary: turn stored bytes into a workflow data dict.
+
+    ``deserializer`` performs ``bytes -> dict``; the optional ``adapter`` then
+    reshapes the resulting ``dict -> dict``.
+    """
+
+    deserializer: DeserializeFunc | None = None
+    adapter: ConvertFunc | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ReaderHooks:
-    """Collect the read-side hooks used at workflow boundaries."""
+    """Aggregate of the read-side hooks used across workflow boundaries.
+
+    The individual concerns are also available as cohesive views: ``.input``
+    (file loading) and ``.payload`` (byte decoding + adapting). Simple helpers
+    accept those focused types directly; multi-stage pipelines (LMDB build /
+    rebuild / extract) keep using the aggregate for convenience.
+    """
 
     loader: LoadFunc | None = None
     adapter: ConvertFunc | None = None
     deserializer: DeserializeFunc | None = None
     key_transform: TransformFunc | None = None
+
+    @property
+    def input(self) -> InputHooks:
+        """Return the file-input boundary view."""
+        return InputHooks(loader=self.loader)
+
+    @property
+    def payload(self) -> PayloadHooks:
+        """Return the payload (deserialize + adapt) boundary view."""
+        return PayloadHooks(deserializer=self.deserializer, adapter=self.adapter)
+
+    def merge(self, override: ReaderHooks | None) -> ReaderHooks:
+        """Return a copy where every non-None field of ``override`` wins.
+
+        This replaces the field-by-field merge that used to be hand-written at
+        each boundary, which was easy to get subtly wrong.
+        """
+        if override is None:
+            return self
+        return ReaderHooks(
+            loader=override.loader if override.loader is not None else self.loader,
+            adapter=override.adapter if override.adapter is not None else self.adapter,
+            deserializer=(
+                override.deserializer
+                if override.deserializer is not None
+                else self.deserializer
+            ),
+            key_transform=(
+                override.key_transform
+                if override.key_transform is not None
+                else self.key_transform
+            ),
+        )
 
     @classmethod
     def from_mapping(
@@ -28,28 +86,14 @@ class ReaderHooks:
         adapter: ConvertFunc | None = None,
         deserializer: DeserializeFunc | None = None,
         key_transform: TransformFunc | None = None,
-        load_func: LoadFunc | None = None,
-        convert_func: ConvertFunc | None = None,
-        deserialize: DeserializeFunc | None = None,
-        transform_func: TransformFunc | None = None,
     ) -> ReaderHooks:
-        """Build reader hooks from a config mapping plus compatibility aliases."""
+        """Build reader hooks from a config mapping and/or explicit callables."""
         reader_dict = dict(mapping or {})
         return cls(
-            loader=loader or load_func or reader_dict.get("loader") or reader_dict.get("load_func"),
-            adapter=adapter or convert_func or reader_dict.get("adapter") or reader_dict.get("convert_func"),
-            deserializer=(
-                deserializer
-                or deserialize
-                or reader_dict.get("deserializer")
-                or reader_dict.get("deserialize")
-            ),
-            key_transform=(
-                key_transform
-                or transform_func
-                or reader_dict.get("key_transform")
-                or reader_dict.get("transform_func")
-            ),
+            loader=loader or reader_dict.get("loader"),
+            adapter=adapter or reader_dict.get("adapter"),
+            deserializer=deserializer or reader_dict.get("deserializer"),
+            key_transform=key_transform or reader_dict.get("key_transform"),
         )
 
 
@@ -67,14 +111,7 @@ def load_inputs(
     **extra_kwargs: Any,
 ) -> dict[str, Any]:
     """Load a file and merge the result with provided base inputs."""
-    resolved_reader = ReaderHooks.from_mapping(None, loader=loader)
-    if reader is not None:
-        resolved_reader = ReaderHooks(
-            loader=reader.loader or resolved_reader.loader,
-            adapter=reader.adapter,
-            deserializer=reader.deserializer,
-            key_transform=reader.key_transform,
-        )
+    resolved_reader = ReaderHooks(loader=loader).merge(reader)
 
     payload = dict(base_inputs or {})
     if resolved_reader.loader is not None:
@@ -93,18 +130,10 @@ def decode_payload(
     adapter: ConvertFunc | None = None,
 ) -> dict[str, Any]:
     """Deserialize raw bytes and optionally adapt the resulting dictionary."""
-    resolved_reader = ReaderHooks.from_mapping(
-        None,
+    resolved_reader = ReaderHooks(
         deserializer=deserializer,
         adapter=adapter,
-    )
-    if reader is not None:
-        resolved_reader = ReaderHooks(
-            loader=reader.loader,
-            adapter=reader.adapter or resolved_reader.adapter,
-            deserializer=reader.deserializer or resolved_reader.deserializer,
-            key_transform=reader.key_transform,
-        )
+    ).merge(reader)
     if resolved_reader.deserializer is None:
         msg = "decode_payload requires a deserializer."
         raise ValueError(msg)
@@ -119,14 +148,13 @@ def resolve_key_transform(
     *,
     reader: ReaderHooks | None = None,
     key_transform: TransformFunc | None = None,
-    transform_func: TransformFunc | None = None,
 ) -> TransformFunc | None:
-    """Resolve the key transform from v2 or compatibility arguments."""
+    """Resolve the key transform from an explicit value or reader hooks."""
     if key_transform is not None:
         return key_transform
     if reader is not None and reader.key_transform is not None:
         return reader.key_transform
-    return transform_func
+    return None
 
 
 def normalize_input_sequence(data_list: Any, *, output_name: str) -> list[dict[str, Any]]:

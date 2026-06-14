@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from .core import (
+    InputHooks,
+    PayloadHooks,
     ReaderHooks,
     decode_payload,
     dot_path,
@@ -12,6 +14,8 @@ from .core import (
 )
 
 __all__ = [
+    "InputHooks",
+    "PayloadHooks",
     "ReaderHooks",
     "decode_payload",
     "dot_path",

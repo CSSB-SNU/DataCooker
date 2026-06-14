@@ -17,6 +17,21 @@ class WriterHooks:
     serializer: SerializeFunc | None = None
     materializer: ProjectFunc | None = None
 
+    def merge(self, override: WriterHooks | None) -> WriterHooks:
+        """Return a copy where every non-None field of ``override`` wins."""
+        if override is None:
+            return self
+        return WriterHooks(
+            serializer=(
+                override.serializer if override.serializer is not None else self.serializer
+            ),
+            materializer=(
+                override.materializer
+                if override.materializer is not None
+                else self.materializer
+            ),
+        )
+
     @classmethod
     def from_mapping(
         cls,
@@ -24,24 +39,12 @@ class WriterHooks:
         *,
         serializer: SerializeFunc | None = None,
         materializer: ProjectFunc | None = None,
-        serialize: SerializeFunc | None = None,
-        project_func: ProjectFunc | None = None,
     ) -> WriterHooks:
-        """Build writer hooks from a config mapping plus compatibility aliases."""
+        """Build writer hooks from a config mapping and/or explicit callables."""
         writer_dict = dict(mapping or {})
         return cls(
-            serializer=(
-                serializer
-                or serialize
-                or writer_dict.get("serializer")
-                or writer_dict.get("serialize")
-            ),
-            materializer=(
-                materializer
-                or project_func
-                or writer_dict.get("materializer")
-                or writer_dict.get("project_func")
-            ),
+            serializer=serializer or writer_dict.get("serializer"),
+            materializer=materializer or writer_dict.get("materializer"),
         )
 
 
@@ -52,12 +55,7 @@ def encode_output(
     serializer: SerializeFunc | None = None,
 ) -> bytes:
     """Serialize a workflow output dictionary to bytes."""
-    resolved_writer = WriterHooks.from_mapping(None, serializer=serializer)
-    if writer is not None:
-        resolved_writer = WriterHooks(
-            serializer=writer.serializer or resolved_writer.serializer,
-            materializer=writer.materializer,
-        )
+    resolved_writer = WriterHooks(serializer=serializer).merge(writer)
     if resolved_writer.serializer is None:
         msg = "encode_output requires a serializer."
         raise ValueError(msg)
@@ -72,12 +70,7 @@ def write_output(
     output_path: Path | None = None,
 ) -> None:
     """Materialize workflow results through an optional output writer."""
-    resolved_writer = WriterHooks.from_mapping(None, materializer=materializer)
-    if writer is not None:
-        resolved_writer = WriterHooks(
-            serializer=writer.serializer,
-            materializer=writer.materializer or resolved_writer.materializer,
-        )
+    resolved_writer = WriterHooks(materializer=materializer).merge(writer)
     if resolved_writer.materializer is None:
         return
     if output_path is None:
