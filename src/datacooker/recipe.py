@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import fnmatch
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Any, TypeAlias, TypeGuard, cast, get_args
+from typing import Any, Literal, TypeAlias, TypeGuard, cast
 
 from .errors import (
     CycleError,
@@ -15,6 +15,7 @@ from .errors import (
     MissingDependencyError,
     UnknownTargetError,
 )
+from .utils.typeutils import allows_none, is_supported_annotation
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +23,7 @@ class Variable:
     """Represents a named artifact or input used by a workflow step."""
 
     name: str
-    type: type[Any]
+    type: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,17 +80,29 @@ class Recipe:
             return self.name
         return f"{self.namespace}.{self.name}"
 
-    def describe(self) -> str:
-        """Return a compact human-readable summary for the step."""
+    def describe(self, *, detail: Literal["full", "compact"] = "full") -> str:
+        """Return a human-readable summary for the step.
+
+        ``detail="full"`` lists positional inputs, keyword bindings, and static
+        params (the original behavior). ``detail="compact"`` shows only the data
+        flow through the instruction (``outputs <- instruction(inputs)``),
+        dropping static params — useful for readable graph rendering.
+        """
         outputs = ", ".join(self.target_names)
         positional = [variable.name for variable in self.inputs.args]
-        keyword = [
-            f"{name}={variable.name}" for name, variable in self.inputs.kwargs.items()
-        ]
-        static_params = [f"{name}={value!r}" for name, value in self.inputs.params.items()]
-        inputs = positional + keyword + static_params
-        dependency_text = ", ".join(inputs) if inputs else "<none>"
-        summary = f"{outputs} <- {dependency_text}"
+        if detail == "compact":
+            keyword = [variable.name for variable in self.inputs.kwargs.values()]
+            inputs = positional + keyword
+            dependency_text = ", ".join(inputs) if inputs else "<none>"
+            summary = f"{outputs} <- {self.instruction_name}({dependency_text})"
+        else:
+            keyword = [
+                f"{name}={variable.name}" for name, variable in self.inputs.kwargs.items()
+            ]
+            static_params = [f"{name}={value!r}" for name, value in self.inputs.params.items()]
+            inputs = positional + keyword + static_params
+            dependency_text = ", ".join(inputs) if inputs else "<none>"
+            summary = f"{outputs} <- {dependency_text}"
         label = self.qualified_name
         if label is not None:
             summary = f"[{label}] {summary}"
@@ -109,14 +122,14 @@ class RecipeError(KeyError):
 
 VariableSet: TypeAlias = tuple[Variable, ...]
 VariableMap: TypeAlias = Mapping[str, Variable]
-RawVariable: TypeAlias = tuple[str, type[Any]]
+RawVariable: TypeAlias = tuple[str, object]
 RawVariableSet: TypeAlias = tuple[RawVariable, ...]
 RawVariableMap: TypeAlias = Mapping[str, RawVariable]
 VariableLike: TypeAlias = Variable | RawVariable
 RAW_VARIABLE_PARTS = 2
 
 
-def variable(name: str, data_type: type[Any] = object) -> Variable:
+def variable(name: str, data_type: object = object) -> Variable:
     """Create a typed variable declaration."""
     return Variable(name=name, type=data_type)
 
@@ -128,6 +141,12 @@ class RecipeBook:
         self._steps: list[Recipe] = []
         self._recipes_by_target: dict[str, Recipe] = {}
         self._default_targets: list[str] | None = None
+        # Analysis caches. The graph mutates only through _register_step, which
+        # is the single place that invalidates them. Keyed by the *normalized*
+        # requested-target tuple, so changing default targets needs no reset.
+        self._adjacency_cache: dict[str, list[str]] | None = None
+        self._order_cache: dict[tuple[str, ...], list[Recipe]] = {}
+        self._required_cache: dict[tuple[str, ...], set[str]] = {}
 
     @property
     def steps(self) -> tuple[Recipe, ...]:
@@ -204,36 +223,7 @@ class RecipeBook:
 
         for recipe in self._steps:
             namespaced._register_step(
-                Recipe(
-                    targets=tuple(
-                        variable(_namespace_target(namespace_prefix, target.name), target.type)
-                        for target in recipe.targets
-                    ),
-                    instruction=recipe.instruction,
-                    inputs=Inputs(
-                        args=tuple(
-                            _namespace_dependency(
-                                dependency,
-                                namespace_prefix,
-                                internal_targets,
-                            )
-                            for dependency in recipe.inputs.args
-                        ),
-                        kwargs={
-                            name: _namespace_dependency(
-                                dependency,
-                                namespace_prefix,
-                                internal_targets,
-                            )
-                            for name, dependency in recipe.inputs.kwargs.items()
-                        },
-                        params=dict(recipe.inputs.params),
-                    ),
-                    name=recipe.name,
-                    namespace=_join_namespace(namespace_prefix, recipe.namespace),
-                    tags=recipe.tags,
-                    metadata=recipe.metadata,
-                )
+                _namespace_recipe(recipe, namespace_prefix, internal_targets)
             )
 
         if self._default_targets is not None:
@@ -352,6 +342,12 @@ class RecipeBook:
         self._steps.append(recipe)
         for target in recipe.targets:
             self._recipes_by_target[target.name] = recipe
+        self._invalidate_caches()
+
+    def _invalidate_caches(self) -> None:
+        self._adjacency_cache = None
+        self._order_cache.clear()
+        self._required_cache.clear()
 
     def __contains__(self, target_name: str) -> bool:
         """Return whether the recipe book declares a target."""
@@ -382,9 +378,90 @@ class RecipeBook:
         recipe = self[target_name]
         return (*recipe.inputs.args, *recipe.inputs.kwargs.values())
 
+    def match_targets(
+        self,
+        pattern: str,
+        *,
+        exclude: Iterable[str] = (),
+    ) -> list[str]:
+        """Return declared targets matching a wildcard ``pattern``, sorted.
+
+        A step never matches its own outputs, so ``exclude`` (typically the
+        consuming step's target names) is removed from the result. The sorted
+        order makes wildcard expansion deterministic.
+        """
+        excluded = set(exclude)
+        return sorted(
+            name
+            for name in self._recipes_by_target
+            if name not in excluded and fnmatch.fnmatch(name, pattern)
+        )
+
+    def _expand_dependency(
+        self,
+        dependency_name: str,
+        own_targets: Iterable[str],
+    ) -> list[str]:
+        """Resolve a dependency name to the internal target names it requires.
+
+        - Wildcards expand to matching declared targets (never the step's own).
+        - A self-reference (a dependency whose name is one of the step's own
+          targets, e.g. an ``X <- X`` pass-through/override step) is treated as
+          an external input, not a graph edge: at runtime the provided input
+          shadows the target, so it must come from outside and never forms a
+          self-cycle.
+        - Any other name that matches a declared target maps to itself.
+        - A genuine external input (not a declared target) contributes no edge;
+          it is surfaced separately by :meth:`required_inputs`.
+        """
+        own = set(own_targets)
+        if _is_wildcard_pattern(dependency_name):
+            return self.match_targets(dependency_name, exclude=own)
+        if dependency_name in own:
+            return []
+        if dependency_name in self._recipes_by_target:
+            return [dependency_name]
+        return []
+
+    def adjacency(self) -> dict[str, list[str]]:
+        """Return a copy of the materialized dependency graph.
+
+        See :meth:`_adjacency` for semantics. A fresh copy is returned so
+        callers cannot corrupt the internal cache.
+        """
+        return {name: list(deps) for name, deps in self._adjacency().items()}
+
+    def _adjacency(self) -> dict[str, list[str]]:
+        """Return the cached materialized dependency graph (target -> deps).
+
+        This is the single source of truth for ordering and cycle detection.
+        Wildcard dependencies are statically expanded here so that every step
+        that feeds a wildcard consumer becomes a real graph edge (and is thus
+        ordered before the consumer).
+        """
+        if self._adjacency_cache is not None:
+            return self._adjacency_cache
+        graph: dict[str, list[str]] = {}
+        for recipe in self._steps:
+            own = recipe.target_names
+            deps: list[str] = []
+            seen: set[str] = set()
+            for dependency in (*recipe.inputs.args, *recipe.inputs.kwargs.values()):
+                for name in self._expand_dependency(dependency.name, own):
+                    if name not in seen:
+                        seen.add(name)
+                        deps.append(name)
+            for target_name in own:
+                graph[target_name] = deps
+        self._adjacency_cache = graph
+        return graph
+
     def required_inputs(self, targets: str | Sequence[str] | None = None) -> set[str]:
         """Return unresolved external inputs needed for the requested targets."""
         requested_targets = self._normalize_requested_targets(targets)
+        cache_key = tuple(requested_targets)
+        if cache_key in self._required_cache:
+            return set(self._required_cache[cache_key])
         required: set[str] = set()
         visited: set[str] = set()
 
@@ -393,17 +470,26 @@ class RecipeBook:
                 return
             visited.add(target_name)
 
+            recipe = self[target_name]
+            own = set(recipe.target_names)
             for dependency in self.dependencies(target_name):
-                if _is_wildcard_pattern(dependency.name):
-                    continue
-                if dependency.name in self:
-                    walk(dependency.name)
-                elif not _allows_none(dependency.type):
-                    required.add(dependency.name)
+                name = dependency.name
+                if _is_wildcard_pattern(name):
+                    # A wildcard can only ever bind to declared targets, so it
+                    # contributes no external input; recurse into its producers.
+                    for produced in self._expand_dependency(name, own):
+                        walk(produced)
+                elif name not in own and name in self:
+                    walk(name)
+                elif not allows_none(dependency.type):
+                    # External input, or a self-reference (X <- X) that must be
+                    # supplied from outside.
+                    required.add(name)
 
         for target_name in requested_targets:
             walk(target_name)
-        return required
+        self._required_cache[cache_key] = required
+        return set(required)
 
     def missing_inputs(
         self,
@@ -412,17 +498,25 @@ class RecipeBook:
     ) -> set[str]:
         """Return missing external inputs for the requested targets."""
         available = set(available_inputs)
-        return self.required_inputs(targets) - available
+        return {
+            dependency
+            for dependency in self.required_inputs(targets)
+            if not _input_available(available, dependency)
+        }
 
     def execution_order(self, targets: str | Sequence[str] | None = None) -> list[Recipe]:
         """Return the topologically sorted steps needed for the requested targets."""
         requested_targets = self._normalize_requested_targets(targets)
+        cache_key = tuple(requested_targets)
+        if cache_key in self._order_cache:
+            return list(self._order_cache[cache_key])
+        graph = self._adjacency()
         order: list[Recipe] = []
         emitted_steps: set[int] = set()
         not_visited = 0
         visiting = 1
         visited_state = 2
-        state = dict.fromkeys(self.target_names(), not_visited)
+        state = dict.fromkeys(graph, not_visited)
         trail: list[str] = []
 
         def visit(target_name: str) -> None:
@@ -437,15 +531,12 @@ class RecipeBook:
 
             state[target_name] = visiting
             trail.append(target_name)
-            recipe = self[target_name]
-            for dependency in self.dependencies(target_name):
-                if _is_wildcard_pattern(dependency.name):
-                    continue
-                if dependency.name in self:
-                    visit(dependency.name)
+            for dependency_name in graph[target_name]:
+                visit(dependency_name)
             trail.pop()
             state[target_name] = visited_state
 
+            recipe = self[target_name]
             recipe_id = id(recipe)
             if recipe_id not in emitted_steps:
                 emitted_steps.add(recipe_id)
@@ -454,13 +545,15 @@ class RecipeBook:
         for target_name in requested_targets:
             visit(target_name)
 
-        return order
+        self._order_cache[cache_key] = order
+        return list(order)
 
     def describe(
         self,
         *,
         targets: str | Sequence[str] | None = None,
         available_inputs: Sequence[str] | set[str] | None = None,
+        detail: Literal["full", "compact"] = "full",
     ) -> str:
         """Return a human-readable workflow summary for the requested targets."""
         requested_targets = self._normalize_requested_targets(targets)
@@ -481,7 +574,7 @@ class RecipeBook:
             )
         lines.append("Execution order:")
         for index, recipe in enumerate(self.execution_order(requested_targets), start=1):
-            lines.append(f"{index}. {recipe.describe()}")
+            lines.append(f"{index}. {recipe.describe(detail=detail)}")
         return "\n".join(lines)
 
     def to_mermaid(
@@ -489,6 +582,7 @@ class RecipeBook:
         *,
         targets: str | Sequence[str] | None = None,
         available_inputs: Sequence[str] | set[str] | None = None,
+        detail: Literal["full", "compact"] = "full",
     ) -> str:
         """Render the requested workflow graph as Mermaid flowchart text."""
         graph = self._build_graph_view(targets=targets, available_inputs=available_inputs)
@@ -507,8 +601,8 @@ class RecipeBook:
 
         for index, recipe in enumerate(graph.order, start=1):
             step_id = _step_node_id(index)
-            label = f"step {index}\\n{recipe.describe()}"
-            lines.append(f'    {step_id}{{{{"{_escape_mermaid(label)}"}}}}')
+            label = f"step {index}<br/>{_escape_mermaid(recipe.describe(detail=detail))}"
+            lines.append(f'    {step_id}{{{{"{label}"}}}}')
         lines.extend(
             f'    {_node_id("target", target_name)}["{_escape_mermaid(target_name)}"]'
             for target_name in graph.produced_targets
@@ -516,10 +610,9 @@ class RecipeBook:
 
         for index, recipe in enumerate(graph.order, start=1):
             step_id = _step_node_id(index)
-            dependencies = (*recipe.inputs.args, *recipe.inputs.kwargs.values())
             lines.extend(
-                f"    {_dependency_node_id(graph, dependency.name)} --> {step_id}"
-                for dependency in dependencies
+                f"    {_dependency_node_id(graph, dependency_name)} --> {step_id}"
+                for dependency_name in self._render_dependency_names(recipe, graph)
             )
             lines.extend(
                 f"    {step_id} --> {_node_id('target', target.name)}"
@@ -542,6 +635,7 @@ class RecipeBook:
         *,
         targets: str | Sequence[str] | None = None,
         available_inputs: Sequence[str] | set[str] | None = None,
+        detail: Literal["full", "compact"] = "full",
     ) -> str:
         """Render the requested workflow graph as Graphviz DOT text."""
         graph = self._build_graph_view(targets=targets, available_inputs=available_inputs)
@@ -563,7 +657,7 @@ class RecipeBook:
 
         for index, recipe in enumerate(graph.order, start=1):
             step_id = _step_node_id(index)
-            label = f"step {index}\\n{recipe.describe()}"
+            label = f"step {index}\\n{recipe.describe(detail=detail)}"
             lines.append(
                 f'    {step_id} [label="{_escape_dot(label)}", shape=box, '
                 'style="rounded,filled", fillcolor="#f4f1e8", color="#6b5b3e"];'
@@ -580,10 +674,9 @@ class RecipeBook:
 
         for index, recipe in enumerate(graph.order, start=1):
             step_id = _step_node_id(index)
-            dependencies = (*recipe.inputs.args, *recipe.inputs.kwargs.values())
             lines.extend(
-                f"    {_dependency_node_id(graph, dependency.name)} -> {step_id};"
-                for dependency in dependencies
+                f"    {_dependency_node_id(graph, dependency_name)} -> {step_id};"
+                for dependency_name in self._render_dependency_names(recipe, graph)
             )
             lines.extend(
                 f"    {step_id} -> {_node_id('target', target.name)};"
@@ -599,17 +692,53 @@ class RecipeBook:
         output_format: str = "mermaid",
         targets: str | Sequence[str] | None = None,
         available_inputs: Sequence[str] | set[str] | None = None,
+        detail: Literal["full", "compact"] = "full",
     ) -> str:
         """Render the workflow graph in a supported visualization format."""
         if output_format == "mermaid":
-            return self.to_mermaid(targets=targets, available_inputs=available_inputs)
+            return self.to_mermaid(
+                targets=targets, available_inputs=available_inputs, detail=detail
+            )
         if output_format == "dot":
-            return self.to_dot(targets=targets, available_inputs=available_inputs)
+            return self.to_dot(
+                targets=targets, available_inputs=available_inputs, detail=detail
+            )
         msg = (
             f"Unsupported visualization format '{output_format}'. "
             "Expected 'mermaid' or 'dot'."
         )
         raise InvalidRecipeError(msg)
+
+    def _render_dependency_names(
+        self,
+        recipe: Recipe,
+        graph: _GraphView,
+    ) -> list[str]:
+        """Return dependency node names for rendering, wildcards expanded.
+
+        A wildcard dependency is drawn as edges from each produced target it
+        matches (mirroring the real DAG). If nothing matches, the raw pattern is
+        kept so the edge is still visible.
+        """
+        rendered: list[str] = []
+        seen: set[str] = set()
+        own = set(recipe.target_names)
+        for dependency in (*recipe.inputs.args, *recipe.inputs.kwargs.values()):
+            if _is_wildcard_pattern(dependency.name):
+                matched = [
+                    target_name
+                    for target_name in graph.produced_targets
+                    if target_name not in own
+                    and fnmatch.fnmatch(target_name, dependency.name)
+                ]
+                expanded = matched or [dependency.name]
+            else:
+                expanded = [dependency.name]
+            for name in expanded:
+                if name not in seen:
+                    seen.add(name)
+                    rendered.append(name)
+        return rendered
 
     def validate(
         self,
@@ -679,6 +808,10 @@ class RecipeBook:
 
         for recipe in order:
             for dependency in (*recipe.inputs.args, *recipe.inputs.kwargs.values()):
+                if _is_wildcard_pattern(dependency.name):
+                    # Wildcards bind to declared targets (rendered as expanded
+                    # edges) and never represent a genuine external input.
+                    continue
                 if dependency.name not in produced_target_set:
                     external_inputs.add(dependency.name)
 
@@ -701,7 +834,7 @@ def _is_raw_variable(value: object) -> TypeGuard[RawVariable]:
         isinstance(value, tuple)
         and len(value) == RAW_VARIABLE_PARTS
         and isinstance(value[0], str)
-        and isinstance(value[1], type)
+        and is_supported_annotation(value[1])
     )
 
 
@@ -828,6 +961,39 @@ def _namespace_target(namespace: str, target_name: str) -> str:
     return f"{namespace}.{target_name}"
 
 
+def _namespace_recipe(
+    recipe: Recipe,
+    namespace_prefix: str,
+    internal_targets: set[str],
+) -> Recipe:
+    """Return ``recipe`` rebound under ``namespace_prefix``.
+
+    Only the namespace-sensitive fields (targets, inputs, namespace) are
+    transformed; everything else (name, tags, metadata, and any field added to
+    :class:`Recipe` in the future) is copied verbatim via
+    :func:`dataclasses.replace`, so this can never silently drop a field.
+    """
+    return replace(
+        recipe,
+        targets=tuple(
+            variable(_namespace_target(namespace_prefix, target.name), target.type)
+            for target in recipe.targets
+        ),
+        inputs=Inputs(
+            args=tuple(
+                _namespace_dependency(dependency, namespace_prefix, internal_targets)
+                for dependency in recipe.inputs.args
+            ),
+            kwargs={
+                name: _namespace_dependency(dependency, namespace_prefix, internal_targets)
+                for name, dependency in recipe.inputs.kwargs.items()
+            },
+            params=dict(recipe.inputs.params),
+        ),
+        namespace=_join_namespace(namespace_prefix, recipe.namespace),
+    )
+
+
 def _namespace_dependency(
     dependency: Variable,
     namespace: str,
@@ -842,8 +1008,11 @@ def _namespace_dependency(
     return dependency
 
 
-def _allows_none(annotation: object) -> bool:
-    return type(None) in get_args(annotation)
+def _input_available(available_inputs: set[str], dependency: str) -> bool:
+    if dependency in available_inputs:
+        return True
+    prefix = f"{dependency}."
+    return any(input_name.startswith(prefix) for input_name in available_inputs)
 
 
 def _is_wildcard_pattern(name: str) -> bool:

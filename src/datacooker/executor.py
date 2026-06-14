@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args, overload
+from typing import TYPE_CHECKING, Any, overload
 
-from .cache import ParsingCache
+from .cache import ExecutionContext
 from .errors import (
     CycleError,
     InstructionOutputError,
@@ -18,18 +19,28 @@ from .errors import (
 )
 from .loading import load_recipe, normalize_targets
 from .recipe import RecipeBook
+from .utils.typeutils import allows_none
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .recipe import Recipe
 
 
 class Cooker:
-    """Resolve and execute a static workflow graph."""
+    """Resolve and execute a static workflow graph.
+
+    Thread-safety: a ``Cooker`` wraps a single mutable ``ExecutionContext`` and
+    is **not** safe to share across threads. Create one ``Cooker`` per workflow
+    run; for parallelism, run independent executions per work item (the pattern
+    used by ``datacooker.processing`` and the LMDB helpers). The wrapped
+    ``RecipeBook`` is read-only during execution and may be shared.
+    """
 
     @overload
     def __init__(
         self,
-        parse_cache: ParsingCache,
+        context: ExecutionContext,
         recipebook: RecipeBook,
         targets: Sequence[str] | str | None = None,
     ) -> None: ...
@@ -37,18 +48,18 @@ class Cooker:
     @overload
     def __init__(
         self,
-        parse_cache: ParsingCache,
+        context: ExecutionContext,
         recipebook: str | Path,
         targets: Sequence[str] | str | None = None,
     ) -> None: ...
 
     def __init__(
         self,
-        parse_cache: ParsingCache,
+        context: ExecutionContext,
         recipebook: RecipeBook | str | Path,
         targets: Sequence[str] | str | None = None,
     ) -> None:
-        self.parse_cache = parse_cache
+        self.context = context
         if isinstance(recipebook, RecipeBook):
             self.recipebook = recipebook
             self.targets = (
@@ -70,7 +81,7 @@ class Cooker:
             fields = list(data_dict.keys())
         for field in fields:
             if field in data_dict:
-                self.parse_cache.add_data(field, data_dict[field])
+                self.context.add_data(field, data_dict[field])
             else:
                 msg = f"Field '{field}' not found in provided input data."
                 raise ValueError(msg)
@@ -85,7 +96,7 @@ class Cooker:
         requested_targets = self._resolve_requested_targets(targets)
         if validate:
             self.recipebook.validate(
-                available_inputs=set(self.parse_cache.keys()),
+                available_inputs=set(self.context.keys()),
                 targets=requested_targets,
             )
 
@@ -93,11 +104,11 @@ class Cooker:
         resolution_stack: list[str] = []
 
         def resolve(target_name: str, target_type: object) -> object:
-            if target_name in self.parse_cache:
-                return self.parse_cache[target_name]
+            if target_name in self.context:
+                return self.context[target_name]
 
             if target_name not in self.recipebook:
-                if type(None) in get_args(target_type):
+                if allows_none(target_type):
                     return None
                 raise self._missing_dependency_error(target_name, resolution_stack)
 
@@ -133,22 +144,22 @@ class Cooker:
         requested_targets = self._resolve_requested_targets(targets)
         results: dict[str, Any] = {}
         for target_name in requested_targets:
-            if target_name not in self.parse_cache:
+            if target_name not in self.context:
                 msg = f"Target '{target_name}' was not produced during execution."
                 raise MissingTargetError(
                     msg,
                     target_name=target_name,
                     requested_targets=tuple(requested_targets),
-                    available_outputs=tuple(sorted(self.parse_cache.keys())),
+                    available_outputs=tuple(sorted(self.context.keys())),
                 )
-            results[target_name] = self.parse_cache[target_name]
+            results[target_name] = self.context[target_name]
         return results
 
     def _expand_wildcard_args(self, pattern: str) -> list[Any]:
         """Resolve wildcard arguments against currently available cache keys."""
         return [
-            self.parse_cache[key]
-            for key in sorted(self.parse_cache.keys())
+            self.context[key]
+            for key in sorted(self.context.keys())
             if fnmatch.fnmatch(key, pattern)
         ]
 
@@ -191,7 +202,7 @@ class Cooker:
             dependency_name=dependency_name,
             requesting_target=resolution_stack[-1] if resolution_stack else None,
             dependency_chain=(*resolution_stack, dependency_name),
-            available_inputs=tuple(sorted(self.parse_cache.keys())),
+            available_inputs=tuple(sorted(self.context.keys())),
         )
 
     def _cycle_error(
@@ -210,7 +221,23 @@ class Cooker:
         resolved_args: list[Any] = []
         for variable in recipe.inputs.args:
             if _is_wildcard_pattern(variable.name):
-                resolved_args.extend(self._expand_wildcard_args(variable.name))
+                # Resolve every declared target the pattern binds to *before*
+                # expanding, so the matched set no longer depends on which
+                # other targets happened to be resolved first.
+                for produced in self.recipebook.match_targets(
+                    variable.name,
+                    exclude=recipe.target_names,
+                ):
+                    resolve(produced, self._target_type(produced))
+                matched = self._expand_wildcard_args(variable.name)
+                if not matched:
+                    logger.warning(
+                        "Wildcard argument '%s' in step producing %s matched no "
+                        "inputs or targets; it contributes no values.",
+                        variable.name,
+                        recipe.target_names,
+                    )
+                resolved_args.extend(matched)
             else:
                 resolved_args.append(resolve(variable.name, variable.type))
 
@@ -253,7 +280,7 @@ class Cooker:
     ) -> object:
         produced_targets = [variable.name for variable in recipe.targets]
         if len(produced_targets) == 1:
-            self.parse_cache.add_data(produced_targets[0], result)
+            self.context.add_data(produced_targets[0], result)
             return result
 
         if not isinstance(result, tuple) or len(result) != len(produced_targets):
@@ -271,7 +298,7 @@ class Cooker:
 
         resolved_output: object | None = None
         for produced_name, produced_value in zip(produced_targets, result, strict=True):
-            self.parse_cache.add_data(produced_name, produced_value)
+            self.context.add_data(produced_name, produced_value)
             if produced_name == target_name:
                 resolved_output = produced_value
         return resolved_output
