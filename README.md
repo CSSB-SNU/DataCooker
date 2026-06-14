@@ -9,7 +9,7 @@ This repository intentionally keeps only reusable workflow primitives:
 
 - `RecipeBook` for declaring workflow steps
 - `Cooker` for resolving requested targets over a static graph
-- `ExecutionContext` / `ParsingCache` for runtime values
+- `ExecutionContext` for runtime values
 - `execute()` for running workflows from in-memory inputs
 - `parse_dict()` and `parse_file()` as convenience wrappers
 - `describe()` for workflow introspection and debugging
@@ -241,18 +241,19 @@ Integration namespaces are imported explicitly:
 - `datacooker.runners`: `run_recipe`, `run_recipe_batch`, `run_lmdb_extract`
 - `datacooker.utils`: dotted import, path scan, and sharding helpers
 
-Compatibility wrappers are also available when you want to keep older naming:
+Run batches with `run_recipe_batch(...)`, which returns a `BatchProcessReport`
+with structured counts plus per-item outputs and errors. The lower-level
+`parallel_process(...)` helper keeps a plain list-of-tuples return shape.
 
-- `run_workflow(...)`
-- `run_parallel_workflow(...)`
-- `extract_lmdb_workflow(...)`
+> **v3 note.** The legacy orchestration wrappers (`run_workflow`,
+> `run_parallel_workflow`, `extract_lmdb_workflow`) and all dual-named callable
+> parameters (`load_func`, `convert_func`, `serialize`, `deserialize`,
+> `transform_func`, `project_func`, `key_func`) were removed. Use the canonical
+> runners (`run_recipe`, `run_recipe_batch`, `run_lmdb_extract`) and the single
+> hook vocabulary: `loader`, `adapter`, `deserializer`, `serializer`,
+> `key_transform`, `materializer`, `key_builder`.
 
-`run_parallel_workflow(...)` returns a `BatchProcessReport` with structured
-counts plus per-item outputs and errors, while the historical
-`parallel_process(...)` helper keeps its older list-of-tuples return shape for
-backward compatibility.
-
-Optional CLI entrypoints mirror those wrappers:
+Optional CLI entrypoints:
 
 ```bash
 datacooker-workflow run config.yaml
@@ -290,9 +291,14 @@ output_path: ${p:/data/output.txt}
 
 ## Compatibility
 
-The legacy `RecipeBook.add(...)`, `parse(...)`, and `rebuild(...)` APIs remain
-available for existing downstream code. New code should prefer
-`RecipeBook.step(...)` plus `execute(...)`.
+The legacy `RecipeBook.add(...)` API remains available for existing downstream
+code. New code should prefer `RecipeBook.step(...)` plus `execute(...)`.
+
+As of v2.1 the redundant `parse(...)` / `rebuild(...)` aliases (use
+`parse_file(...)` / `parse_dict(...)`), the `ParsingCache` alias (use
+`ExecutionContext`), and the unused protocol aliases (`FileReader`,
+`DataAdapter`, `KeyTransform`, `PayloadReader`, `PayloadWriter`, `ResultWriter`)
+have been removed in favor of their single canonical names.
 
 The historical `datacooker.core` and `datacooker.utils.db` import paths remain
 as compatibility shims for downstream repositories.

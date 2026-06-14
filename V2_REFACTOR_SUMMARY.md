@@ -113,13 +113,15 @@ LMDB pipeline도 같은 vocabulary로 재정리했다.
 
 `datacooker.__init__` export를 정리해서 다음 개념을 직접 노출한다.
 
-- protocol alias
-  - `FileReader`
-  - `DataAdapter`
-  - `KeyTransform`
-  - `PayloadReader`
-  - `PayloadWriter`
-  - `ResultWriter`
+- protocol types (v2.1: canonical names only; the duplicate aliases
+  `FileReader` / `DataAdapter` / `KeyTransform` / `PayloadReader` /
+  `PayloadWriter` / `ResultWriter` were removed)
+  - `LoadFunc`
+  - `ConvertFunc`
+  - `TransformFunc`
+  - `DeserializeFunc`
+  - `SerializeFunc`
+  - `ProjectFunc`
 - hooks
   - `ReaderHooks`
   - `WriterHooks`
