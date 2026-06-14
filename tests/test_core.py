@@ -154,6 +154,28 @@ class DataCookerCoreTests(unittest.TestCase):
         with self.assertRaises(MissingDependencyError):
             execute(recipe, {"a": 1})
 
+    def test_optional_raw_variable_allows_missing_external_input(self) -> None:
+        recipe = RecipeBook().add(
+            (("summary", str),),
+            lambda required, optional: f"{required}:{optional}",
+            {"args": (("required", str), ("optional", str | None))},
+        )
+
+        result = execute(recipe, {"required": "value"})
+
+        self.assertEqual(result, {"summary": "value:None"})
+
+    def test_generic_raw_variable_annotation_is_accepted(self) -> None:
+        recipe = RecipeBook().add(
+            (("size", int),),
+            lambda payload: len(payload),
+            {"args": (("payload", dict[str, int]),)},
+        )
+
+        result = execute(recipe, {"payload": {"a": 1, "b": 2}})
+
+        self.assertEqual(result, {"size": 2})
+
     def test_unknown_target_raises_error(self) -> None:
         recipe = RecipeBook().add(
             (("sum", int),),
@@ -258,8 +280,8 @@ class DataCookerCoreTests(unittest.TestCase):
         rendered = visualize(recipe, available_inputs={"a", "b"})
 
         self.assertIn("flowchart LR", rendered)
-        self.assertIn('step_1{{"step 1\\nsum <- a, b"}}', rendered)
-        self.assertIn('step_2{{"step 2\\nlabel <- sum"}}', rendered)
+        self.assertIn('step_1{{"step 1<br/>sum <- a, b"}}', rendered)
+        self.assertIn('step_2{{"step 2<br/>label <- sum"}}', rendered)
         self.assertIn("target_sum --> step_2", rendered)
         self.assertIn("class target_label requested;", rendered)
 

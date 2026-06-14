@@ -68,6 +68,20 @@ class DataCookerUtilsTests(unittest.TestCase):
                     """
                 )
             )
+            extract_recipe_path = root / "extract_mod.py"
+            extract_recipe_path.write_text(
+                textwrap.dedent(
+                    """
+                    from datacooker import RecipeBook, variable
+
+                    RECIPE = RecipeBook().step(
+                        outputs=variable("double", int),
+                        instruction=lambda db_data: db_data["double"],
+                        args=[variable("db_data", dict)],
+                    ).set_default_targets("double")
+                    """
+                )
+            )
             first = root / "a.txt"
             second = root / "b.txt"
             first.write_text("2")
@@ -79,8 +93,8 @@ class DataCookerUtilsTests(unittest.TestCase):
                 second,
                 env_path=env_path,
                 recipe=recipe_path,
-                serialize=_serialize,
-                load_func=lambda file_path: {"value": int(file_path.read_text())},
+                serializer=_serialize,
+                loader=lambda file_path: {"value": int(file_path.read_text())},
                 chunk_size=1,
                 n_jobs=1,
                 test_run=False,
@@ -106,14 +120,14 @@ class DataCookerUtilsTests(unittest.TestCase):
                 },
             )
             self.assertEqual(
-                read_lmdb(env_path, "a", deserialize=_deserialize),
+                read_lmdb(env_path, "a", deserializer=_deserialize),
                 {"double": 4},
             )
             self.assertEqual(
                 extract_lmdb_records(
                     env_path,
-                    recipe_path := recipe_path,
-                    deserialize=_deserialize,
+                    extract_recipe_path,
+                    deserializer=_deserialize,
                     chunk_size=1,
                     n_jobs=1,
                     test_run=False,
@@ -168,8 +182,8 @@ class DataCookerUtilsTests(unittest.TestCase):
                 data_path,
                 env_path=old_env,
                 recipe=source_recipe,
-                serialize=_serialize,
-                load_func=lambda file_path: {"value": int(file_path.read_text())},
+                serializer=_serialize,
+                loader=lambda file_path: {"value": int(file_path.read_text())},
                 n_jobs=1,
                 test_run=False,
             )
@@ -178,8 +192,8 @@ class DataCookerUtilsTests(unittest.TestCase):
                 old_env_path=old_env,
                 new_env_path=new_env,
                 recipe=rebuild_recipe,
-                serialize=_serialize,
-                deserialize=_deserialize,
+                serializer=_serialize,
+                deserializer=_deserialize,
                 n_jobs=1,
                 test_run=False,
             )
@@ -188,7 +202,7 @@ class DataCookerUtilsTests(unittest.TestCase):
             self.assertEqual(report.written, 1)
             self.assertEqual(report.failed, 0)
             self.assertEqual(
-                read_lmdb(new_env, "value", deserialize=_deserialize),
+                read_lmdb(new_env, "value", deserializer=_deserialize),
                 {"triple": 9},
             )
 
@@ -223,8 +237,8 @@ class DataCookerUtilsTests(unittest.TestCase):
                 first,
                 env_path=env_path,
                 recipe=recipe_path,
-                serialize=_serialize,
-                load_func=lambda file_path: {"value": int(file_path.read_text())},
+                serializer=_serialize,
+                loader=lambda file_path: {"value": int(file_path.read_text())},
                 n_jobs=1,
                 test_run=False,
             )
@@ -233,8 +247,8 @@ class DataCookerUtilsTests(unittest.TestCase):
                 second,
                 env_path=env_path,
                 recipe=recipe_path,
-                serialize=_serialize,
-                load_func=lambda file_path: {"value": int(file_path.read_text())},
+                serializer=_serialize,
+                loader=lambda file_path: {"value": int(file_path.read_text())},
                 skip_existing=True,
                 n_jobs=1,
                 test_run=False,
