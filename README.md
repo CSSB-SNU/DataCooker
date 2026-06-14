@@ -15,6 +15,9 @@ This repository intentionally keeps only reusable workflow primitives:
 - `describe()` for workflow introspection and debugging
 - `visualize()` for Mermaid and Graphviz graph rendering
 - `datacooker.lmdb` for recipe-driven LMDB build/rebuild/read/extract flows
+- `datacooker.readers` for input-boundary hooks and adapters
+- `datacooker.writers` for output-boundary hooks and materializers
+- `datacooker.runners` for composing read/transform/write flows
 - `datacooker.utils.paths` and `datacooker.utils.importing` for downstream glue code
 
 Domain-specific pipelines, IO loaders, model calls, and data products are
@@ -29,6 +32,13 @@ DataCooker models a workflow as:
 - step functions that consume declared inputs and produce declared outputs
 
 The graph shape is static. The runtime values are dynamic.
+
+The v2 public surface is intentionally organized around four concepts:
+
+- `Read`: boundary hooks that load or adapt input data
+- `Transform`: the static recipe graph itself
+- `Write`: boundary hooks that serialize or materialize outputs
+- `Runner`: orchestration that composes read, transform, and write steps
 
 On top of that core model, DataCooker supports a few higher-level composition
 features that are common in stronger workflow libraries:
@@ -226,11 +236,12 @@ Integration namespaces are imported explicitly:
 - `datacooker.lmdb`: generic LMDB workflow helpers and write reports
 - `datacooker.processing`: joblib-backed batch helpers
 - `datacooker.config`: OmegaConf-based config loading for downstream apps
+- `datacooker.readers`: `ReaderHooks`, `dot_path`, payload decode helpers
+- `datacooker.writers`: `WriterHooks`, payload encode helpers, output materializers
+- `datacooker.runners`: `run_recipe`, `run_recipe_batch`, `run_lmdb_extract`
 - `datacooker.utils`: dotted import, path scan, and sharding helpers
 
-Higher-level orchestration wrappers are also available when you want to keep
-workflow code inside Python but move config-driven boilerplate out of
-downstream projects:
+Compatibility wrappers are also available when you want to keep older naming:
 
 - `run_workflow(...)`
 - `run_parallel_workflow(...)`
@@ -250,6 +261,20 @@ datacooker-workflow extract-lmdb config.yaml
 datacooker-lmdb build config.yaml
 datacooker-lmdb rebuild config.yaml
 datacooker-lmdb merge "/path/to/shard*.lmdb" --output merged.lmdb
+```
+
+Config-driven runners can now group boundary hooks explicitly:
+
+```yaml
+reader:
+  loader: mypkg.readers.load_sample
+  key_transform: mypkg.readers.dot_path
+writer:
+  materializer: mypkg.writers.write_report
+recipe: ${p:recipes/report.py}
+inputs:
+  input_path: ${p:/data/input.json}
+output_path: ${p:/data/output.txt}
 ```
 
 ## Current Guarantees

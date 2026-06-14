@@ -10,6 +10,7 @@ from .cache import ExecutionContext
 from .executor import Cooker
 from .loading import load_recipe
 from .protocols import LoadFunc, TransformFunc
+from .readers import load_inputs, resolve_key_transform
 from .recipe import RecipeBook
 
 
@@ -17,6 +18,7 @@ def execute(
     recipebook: RecipeBook | str | Path,
     inputs: Mapping[str, Any],
     *,
+    key_transform: TransformFunc | None = None,
     transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
     step_names: Sequence[str] | str | None = None,
@@ -32,7 +34,12 @@ def execute(
         tags=tags,
         namespaces=namespaces,
     )
-    parse_cache = ExecutionContext(transform_func)
+    parse_cache = ExecutionContext(
+        resolve_key_transform(
+            key_transform=key_transform,
+            transform_func=transform_func,
+        )
+    )
     cooker = Cooker(parse_cache=parse_cache, recipebook=selected_recipe)
     cooker.prep(dict(inputs))
     cooker.cook(targets=targets, validate=validate)
@@ -92,8 +99,11 @@ def visualize(
 def parse_file(
     recipe_path: RecipeBook | str | Path,
     file_path: Path,
-    load_func: LoadFunc | None,
+    load_func: LoadFunc | None = None,
     inputs: Mapping[str, Any] | None = None,
+    *,
+    loader: LoadFunc | None = None,
+    key_transform: TransformFunc | None = None,
     transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
     step_names: Sequence[str] | str | None = None,
@@ -103,15 +113,16 @@ def parse_file(
     **extra_kwargs: Any,
 ) -> dict[str, Any]:
     """Load a file, merge additional inputs, and execute the requested recipe."""
-    data_dict = dict(inputs or {})
-    if load_func is not None:
-        data_dict.update(load_func(file_path))
-    else:
-        data_dict["file_path"] = file_path
-    data_dict.update(extra_kwargs)
+    data_dict = load_inputs(
+        file_path,
+        loader=loader or load_func,
+        base_inputs=inputs,
+        **extra_kwargs,
+    )
     return execute(
         recipe_path,
         data_dict,
+        key_transform=key_transform,
         transform_func=transform_func,
         targets=targets,
         step_names=step_names,
@@ -124,6 +135,8 @@ def parse_file(
 def parse_dict(
     recipe_path: RecipeBook | str | Path,
     datadict: Mapping[str, Any],
+    *,
+    key_transform: TransformFunc | None = None,
     transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
     step_names: Sequence[str] | str | None = None,
@@ -138,6 +151,7 @@ def parse_dict(
     return execute(
         recipe_path,
         data_dict,
+        key_transform=key_transform,
         transform_func=transform_func,
         targets=targets,
         step_names=step_names,
@@ -151,6 +165,9 @@ def parse(
     recipe_path: RecipeBook | str | Path,
     file_path: Path,
     load_func: LoadFunc,
+    *,
+    loader: LoadFunc | None = None,
+    key_transform: TransformFunc | None = None,
     transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
     step_names: Sequence[str] | str | None = None,
@@ -163,6 +180,8 @@ def parse(
         recipe_path,
         file_path,
         load_func,
+        loader=loader,
+        key_transform=key_transform,
         transform_func=transform_func,
         targets=targets,
         step_names=step_names,
@@ -175,6 +194,8 @@ def parse(
 def rebuild(
     recipe_path: RecipeBook | str | Path,
     datadict: Mapping[str, Any],
+    *,
+    key_transform: TransformFunc | None = None,
     transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
     step_names: Sequence[str] | str | None = None,
@@ -186,6 +207,7 @@ def rebuild(
     return parse_dict(
         recipe_path,
         datadict,
+        key_transform=key_transform,
         transform_func=transform_func,
         targets=targets,
         step_names=step_names,

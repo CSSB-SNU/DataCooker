@@ -16,10 +16,13 @@ from datacooker.lmdb._shared import load_metadata, rebuild_entry
 from datacooker.protocols import (
     ConvertFunc,
     DeserializeFunc,
+    KeyFunc,
     LoadFunc,
     SerializeFunc,
     TransformFunc,
 )
+from datacooker.readers import ReaderHooks, decode_payload, resolve_key_transform
+from datacooker.writers import WriterHooks, encode_output
 
 logger = logging.getLogger(__name__)
 
@@ -110,24 +113,32 @@ def read_lmdb(
     key: str,
     *,
     deserialize: DeserializeFunc,
+    deserializer: DeserializeFunc | None = None,
 ) -> dict[str, Any]:
     """Read a decoded entry from an LMDB database."""
     value = read_lmdb_raw(env_path, key)
     if value is None:
         msg = f"Key '{key}' not found in LMDB database at '{env_path}'."
         raise KeyError(msg)
-    return deserialize(value)
+    resolved_deserializer = deserializer or deserialize
+    return resolved_deserializer(value)
 
 
 def build_lmdb(
     *data_list: Path,
     env_path: Path,
     recipe: Path,
-    serialize: SerializeFunc,
+    serialize: SerializeFunc | None = None,
     key_func: Callable[[Path], str] = default_lmdb_key,
     inputs: Mapping[str, Any] | None = None,
     metadata_recipe: Path | None = None,
     metadata_input: Mapping[str, Any] | None = None,
+    reader: ReaderHooks | None = None,
+    writer: WriterHooks | None = None,
+    loader: LoadFunc | None = None,
+    key_transform: TransformFunc | None = None,
+    serializer: SerializeFunc | None = None,
+    key_builder: KeyFunc | None = None,
     load_func: LoadFunc | None = None,
     transform_func: TransformFunc | None = None,
     chunk_size: int = 10_000,
@@ -139,6 +150,34 @@ def build_lmdb(
     **extra_kwargs: Any,
 ) -> LmdbWriteReport:
     """Build an LMDB database from raw files and a DataCooker recipe."""
+    resolved_reader = ReaderHooks.from_mapping(
+        None,
+        loader=loader,
+        key_transform=key_transform,
+        load_func=load_func,
+        transform_func=transform_func,
+    )
+    if reader is not None:
+        resolved_reader = ReaderHooks(
+            loader=reader.loader or resolved_reader.loader,
+            adapter=reader.adapter,
+            deserializer=reader.deserializer,
+            key_transform=reader.key_transform or resolved_reader.key_transform,
+        )
+    resolved_writer = WriterHooks.from_mapping(
+        None,
+        serializer=serializer,
+        serialize=serialize,
+    )
+    if writer is not None:
+        resolved_writer = WriterHooks(
+            serializer=writer.serializer or resolved_writer.serializer,
+            materializer=writer.materializer,
+        )
+    if resolved_writer.serializer is None:
+        msg = "build_lmdb requires a serializer or writer.serializer."
+        raise ValueError(msg)
+    resolved_key_func = key_builder or key_func
     _validate_error_mode(error_mode)
     lmdb_module = _require_lmdb()
     env = lmdb_module.open(str(env_path), map_size=int(map_size))
@@ -150,26 +189,26 @@ def build_lmdb(
     base_inputs = dict(inputs or {})
     source_paths = list(data_list)
     pending_paths = (
-        filter_pending_lmdb_paths(source_paths, env_path, key_func=key_func)
+        filter_pending_lmdb_paths(source_paths, env_path, key_func=resolved_key_func)
         if skip_existing
         else source_paths
     )
     skipped_existing = len(source_paths) - len(pending_paths)
 
     def _process_file(data_file: Path) -> tuple[bytes, bytes, Exception | None]:
-        key = key_func(data_file)
+        key = resolved_key_func(data_file)
         try:
             data_dict = dict(base_inputs)
             data_dict.update(metadata_dict)
             output = parse_file(
                 recipe_path=recipe,
                 file_path=data_file,
-                load_func=load_func,
+                loader=resolved_reader.loader,
                 inputs=data_dict,
-                transform_func=transform_func,
+                key_transform=resolved_reader.key_transform,
                 **extra_kwargs,
             )
-            return key.encode(), serialize(output), None
+            return key.encode(), encode_output(output, writer=resolved_writer), None
         except Exception as error:  # noqa: BLE001
             return key.encode(), b"", error
 
@@ -197,11 +236,17 @@ def rebuild_lmdb(
     old_env_path: Path,
     new_env_path: Path,
     recipe: Path,
-    serialize: SerializeFunc,
-    deserialize: DeserializeFunc,
+    serialize: SerializeFunc | None = None,
+    deserialize: DeserializeFunc | None = None,
     parameters: Mapping[str, Any] | None = None,
     metadata_recipe: Path | None = None,
     metadata_input: Mapping[str, Any] | None = None,
+    reader: ReaderHooks | None = None,
+    writer: WriterHooks | None = None,
+    adapter: ConvertFunc | None = None,
+    key_transform: TransformFunc | None = None,
+    serializer: SerializeFunc | None = None,
+    deserializer: DeserializeFunc | None = None,
     convert_func: ConvertFunc | None = None,
     transform_func: TransformFunc | None = None,
     split_entries: bool = False,
@@ -214,6 +259,38 @@ def rebuild_lmdb(
     **extra_kwargs: Any,
 ) -> LmdbWriteReport:
     """Rebuild an LMDB database from an existing one through a DataCooker recipe."""
+    resolved_reader = ReaderHooks.from_mapping(
+        None,
+        adapter=adapter,
+        deserializer=deserializer,
+        key_transform=key_transform,
+        convert_func=convert_func,
+        deserialize=deserialize,
+        transform_func=transform_func,
+    )
+    if reader is not None:
+        resolved_reader = ReaderHooks(
+            loader=reader.loader,
+            adapter=reader.adapter or resolved_reader.adapter,
+            deserializer=reader.deserializer or resolved_reader.deserializer,
+            key_transform=reader.key_transform or resolved_reader.key_transform,
+        )
+    resolved_writer = WriterHooks.from_mapping(
+        None,
+        serializer=serializer,
+        serialize=serialize,
+    )
+    if writer is not None:
+        resolved_writer = WriterHooks(
+            serializer=writer.serializer or resolved_writer.serializer,
+            materializer=writer.materializer,
+        )
+    if resolved_reader.deserializer is None:
+        msg = "rebuild_lmdb requires a deserializer or reader.deserializer."
+        raise ValueError(msg)
+    if resolved_writer.serializer is None:
+        msg = "rebuild_lmdb requires a serializer or writer.serializer."
+        raise ValueError(msg)
     _validate_error_mode(error_mode)
     lmdb_module = _require_lmdb()
     new_env = lmdb_module.open(str(new_env_path), map_size=int(map_size))
@@ -240,20 +317,24 @@ def rebuild_lmdb(
             if raw_value is None:
                 return None
 
-            data = deserialize(bytes(raw_value))
-            data = convert_func(data) if convert_func is not None else data
+            data = decode_payload(
+                bytes(raw_value),
+                reader=resolved_reader,
+            )
             rebuilt = rebuild_entry(
                 recipe=recipe,
                 data=data,
                 metadata_dict=metadata_dict,
                 parameter_dict=parameter_dict,
-                transform_func=transform_func,
+                transform_func=resolve_key_transform(
+                    reader=resolved_reader,
+                ),
                 split_entries=split_entries,
                 extra_kwargs=extra_kwargs,
             )
             if rebuilt is None:
                 return None
-            return key.encode(), serialize(rebuilt), None
+            return key.encode(), encode_output(rebuilt, writer=resolved_writer), None
         except Exception as error:  # noqa: BLE001
             return key.encode(), b"", error
 

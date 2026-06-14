@@ -24,12 +24,14 @@ from datacooker.lmdb import (
     rebuild_lmdb,
 )
 from datacooker.processing import parallel_process, parallel_process_report
+from datacooker.readers import ReaderHooks, decode_payload, dot_path
 from datacooker.utils import (
     resolve_node_config,
     resolve_object,
     scan_paths,
     shard_items,
 )
+from datacooker.writers import WriterHooks, encode_output
 
 LMDB_AVAILABLE = find_spec("lmdb") is not None
 JOBLIB_AVAILABLE = find_spec("joblib") is not None
@@ -249,6 +251,18 @@ class DataCookerUtilsTests(unittest.TestCase):
 
     def test_resolve_object(self) -> None:
         self.assertIs(resolve_object("pathlib.Path"), Path)
+
+    def test_reader_writer_helpers(self) -> None:
+        reader = ReaderHooks(
+            deserializer=lambda payload: {"value": int(payload.decode("utf-8"))},
+        )
+        writer = WriterHooks(
+            serializer=lambda data: str(data["value"]).encode("utf-8"),
+        )
+
+        self.assertEqual(dot_path("a.b.c"), ("a", "b", "c"))
+        self.assertEqual(decode_payload(b"5", reader=reader), {"value": 5})
+        self.assertEqual(encode_output({"value": 5}, writer=writer), b"5")
 
     def test_scan_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

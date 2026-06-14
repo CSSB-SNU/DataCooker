@@ -16,6 +16,8 @@ from datacooker.lmdb import (
     merge_lmdb_shards,
     rebuild_lmdb,
 )
+from datacooker.readers import ReaderHooks
+from datacooker.writers import WriterHooks
 
 
 @click.group()
@@ -41,6 +43,8 @@ def build_command(
     coerce_path(config, "env_path")
     _normalize_recipe_alias(config)
     coerce_path(config, "metadata_recipe")
+    config["reader"] = _pop_reader_hooks(config)
+    config["writer"] = _pop_writer_hooks(config)
 
     data_list = scan_paths(data_dir, pattern=file_pattern)
     if shard_idx is not None:
@@ -80,6 +84,8 @@ def rebuild_command(config_path: Path, map_size: int | None) -> None:
     coerce_path(config, "new_env_path")
     _normalize_recipe_alias(config)
     coerce_path(config, "metadata_recipe")
+    config["reader"] = _pop_reader_hooks(config)
+    config["writer"] = _pop_writer_hooks(config)
     if map_size is not None:
         config["map_size"] = map_size
 
@@ -157,6 +163,32 @@ def _normalize_recipe_alias(config: dict[str, Any]) -> None:
     if recipe_path is None:
         return
     config["recipe"] = Path(recipe_path) if isinstance(recipe_path, str) else recipe_path
+
+
+def _pop_reader_hooks(config: dict[str, Any]) -> ReaderHooks:
+    reader_config = config.pop("reader", None)
+    return ReaderHooks.from_mapping(
+        reader_config if isinstance(reader_config, dict) else None,
+        loader=config.pop("loader", None),
+        adapter=config.pop("adapter", None),
+        deserializer=config.pop("deserializer", None),
+        key_transform=config.pop("key_transform", None),
+        load_func=config.pop("load_func", None),
+        convert_func=config.pop("convert_func", None),
+        deserialize=config.pop("deserialize", None),
+        transform_func=config.pop("transform_func", None),
+    )
+
+
+def _pop_writer_hooks(config: dict[str, Any]) -> WriterHooks:
+    writer_config = config.pop("writer", None)
+    return WriterHooks.from_mapping(
+        writer_config if isinstance(writer_config, dict) else None,
+        serializer=config.pop("serializer", None),
+        materializer=config.pop("materializer", None),
+        serialize=config.pop("serialize", None),
+        project_func=config.pop("project_func", None),
+    )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from typing import Any
 from datacooker._parallel import iter_parallel_chunks
 from datacooker.api import parse_dict
 from datacooker.protocols import TransformFunc
+from datacooker.readers import resolve_key_transform
 from datacooker.utils.sharding import resolve_node_config, shard_items
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ def parallel_process(
     *,
     inputs: Mapping[str, Any] | None,
     recipe: Path,
+    key_transform: TransformFunc | None = None,
     transform_func: TransformFunc | None = None,
     chunk_size: int = 10_000,
     n_jobs: int = -1,
@@ -89,6 +91,7 @@ def parallel_process(
         data_list,
         inputs=inputs,
         recipe=recipe,
+        key_transform=key_transform,
         transform_func=transform_func,
         chunk_size=chunk_size,
         n_jobs=n_jobs,
@@ -105,6 +108,7 @@ def parallel_process_report(
     *,
     inputs: Mapping[str, Any] | None,
     recipe: Path,
+    key_transform: TransformFunc | None = None,
     transform_func: TransformFunc | None = None,
     chunk_size: int = 10_000,
     n_jobs: int = -1,
@@ -152,6 +156,10 @@ def parallel_process_report(
         )
 
     shared_inputs = dict(inputs or {})
+    resolved_key_transform = resolve_key_transform(
+        key_transform=key_transform,
+        transform_func=transform_func,
+    )
 
     def _process_item(
         payload: tuple[int, Mapping[str, Any]],
@@ -164,7 +172,7 @@ def parallel_process_report(
             results = parse_dict(
                 recipe_path=recipe,
                 datadict=process_input,
-                transform_func=transform_func,
+                key_transform=resolved_key_transform,
                 **extra_kwargs,
             )
         except Exception as error:  # noqa: BLE001

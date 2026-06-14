@@ -1,21 +1,22 @@
-"""High-level workflow runners composed from the lower-level DataCooker APIs."""
+"""Backward-compatible orchestration wrappers built on top of v2 runners."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from datacooker.api import parse_dict
-from datacooker.lmdb import extract_lmdb_records
-from datacooker.processing import BatchProcessReport, parallel_process_report
+from datacooker.processing import BatchProcessReport
 from datacooker.protocols import (
     ConvertFunc,
     DeserializeFunc,
     ProjectFunc,
     TransformFunc,
 )
+from datacooker.readers import ReaderHooks
 from datacooker.recipe import RecipeBook
+from datacooker.runners import run_lmdb_extract, run_recipe, run_recipe_batch
+from datacooker.writers import WriterHooks
 
 
 def run_workflow(
@@ -23,19 +24,28 @@ def run_workflow(
     *,
     inputs: Mapping[str, Any],
     transform_func: TransformFunc | None = None,
+    key_transform: TransformFunc | None = None,
     project_func: ProjectFunc | None = None,
+    writer: WriterHooks | None = None,
     output_path: Path | None = None,
     **extra_kwargs: Any,
 ) -> dict[str, Any]:
-    """Execute a recipe from prepared inputs and optionally project the result."""
-    results = parse_dict(
+    """Compatibility wrapper for the v2 ``run_recipe`` runner."""
+    reader_hooks = ReaderHooks(key_transform=key_transform or transform_func)
+    writer_hooks = WriterHooks(materializer=project_func)
+    if writer is not None:
+        writer_hooks = WriterHooks(
+            serializer=writer.serializer,
+            materializer=writer.materializer or writer_hooks.materializer,
+        )
+    return run_recipe(
         recipe,
-        dict(inputs),
-        transform_func=transform_func,
+        inputs=inputs,
+        reader=reader_hooks,
+        writer=writer_hooks,
+        output_path=output_path,
         **extra_kwargs,
     )
-    _project_results(results, project_func=project_func, output_path=output_path)
-    return results
 
 
 def run_parallel_workflow(
@@ -45,6 +55,7 @@ def run_parallel_workflow(
     inputs: Mapping[str, Any],
     split_output_name: str = "data_list",
     transform_func: TransformFunc | None = None,
+    key_transform: TransformFunc | None = None,
     chunk_size: int = 10_000,
     n_jobs: int = -1,
     test_run: bool = True,
@@ -52,22 +63,13 @@ def run_parallel_workflow(
     node_count: int | None = None,
     **extra_kwargs: Any,
 ) -> BatchProcessReport:
-    """Expand work items with one recipe and process each item with another."""
-    split_results = parse_dict(
+    """Compatibility wrapper for the v2 ``run_recipe_batch`` runner."""
+    return run_recipe_batch(
         split_recipe,
-        dict(inputs),
-        transform_func=transform_func,
-    )
-    data_list = split_results.get(split_output_name)
-    normalized_data_list = _normalize_data_list(
-        data_list,
-        split_output_name=split_output_name,
-    )
-    return parallel_process_report(
-        normalized_data_list,
+        recipe,
         inputs=inputs,
-        recipe=Path(recipe) if isinstance(recipe, str) else recipe,
-        transform_func=transform_func,
+        reader=ReaderHooks(key_transform=key_transform or transform_func),
+        split_output_name=split_output_name,
         chunk_size=chunk_size,
         n_jobs=n_jobs,
         test_run=test_run,
@@ -87,6 +89,7 @@ def extract_lmdb_workflow(
     metadata_input: Mapping[str, Any] | None = None,
     convert_func: ConvertFunc | None = None,
     transform_func: TransformFunc | None = None,
+    key_transform: TransformFunc | None = None,
     merge_recipe: Path | None = None,
     merge_inputs: Mapping[str, Any] | None = None,
     merge_input_name: str = "data_dict",
@@ -94,67 +97,36 @@ def extract_lmdb_workflow(
     n_jobs: int = -1,
     test_run: bool = True,
     project_func: ProjectFunc | None = None,
+    writer: WriterHooks | None = None,
     output_path: Path | None = None,
     **extra_kwargs: Any,
 ) -> dict[str, Any]:
-    """Extract recipe outputs from an LMDB and optionally project the result."""
-    results = extract_lmdb_records(
+    """Compatibility wrapper for the v2 ``run_lmdb_extract`` runner."""
+    reader_hooks = ReaderHooks(
+        deserializer=deserialize,
+        adapter=convert_func,
+        key_transform=key_transform or transform_func,
+    )
+    writer_hooks = WriterHooks(materializer=project_func)
+    if writer is not None:
+        writer_hooks = WriterHooks(
+            serializer=writer.serializer,
+            materializer=writer.materializer or writer_hooks.materializer,
+        )
+    return run_lmdb_extract(
         env_path,
-        Path(recipe) if isinstance(recipe, str) else recipe,
-        deserialize=deserialize,
+        recipe,
+        reader=reader_hooks,
+        writer=writer_hooks,
         inputs=inputs,
         metadata_recipe=metadata_recipe,
         metadata_input=metadata_input,
-        convert_func=convert_func,
-        transform_func=transform_func,
         merge_recipe=merge_recipe,
         merge_inputs=merge_inputs,
         merge_input_name=merge_input_name,
         chunk_size=chunk_size,
         n_jobs=n_jobs,
         test_run=test_run,
+        output_path=output_path,
         **extra_kwargs,
     )
-    _project_results(results, project_func=project_func, output_path=output_path)
-    return results
-
-
-def _normalize_data_list(
-    data_list: Any,
-    *,
-    split_output_name: str,
-) -> list[dict[str, Any]]:
-    if data_list is None:
-        msg = f"Expected '{split_output_name}' in split workflow output."
-        raise KeyError(msg)
-    if isinstance(data_list, (str, bytes, bytearray)) or not isinstance(data_list, Sequence):
-        msg = (
-            f"Expected '{split_output_name}' to be a sequence of mappings, "
-            f"got {type(data_list).__name__}."
-        )
-        raise TypeError(msg)
-
-    normalized: list[dict[str, Any]] = []
-    for index, item in enumerate(data_list):
-        if not isinstance(item, Mapping):
-            msg = (
-                f"Expected '{split_output_name}[{index}]' to be a mapping, "
-                f"got {type(item).__name__}."
-            )
-            raise TypeError(msg)
-        normalized.append(dict(item))
-    return normalized
-
-
-def _project_results(
-    results: dict[str, Any],
-    *,
-    project_func: ProjectFunc | None,
-    output_path: Path | None,
-) -> None:
-    if project_func is None:
-        return
-    if output_path is None:
-        msg = "output_path is required when project_func is provided."
-        raise ValueError(msg)
-    project_func(data=results, output_path=output_path)
