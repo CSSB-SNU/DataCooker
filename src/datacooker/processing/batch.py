@@ -78,7 +78,6 @@ def parallel_process(
     inputs: Mapping[str, Any] | None,
     recipe: Path,
     key_transform: TransformFunc | None = None,
-    transform_func: TransformFunc | None = None,
     chunk_size: int = 10_000,
     n_jobs: int = -1,
     test_run: bool = True,
@@ -92,7 +91,6 @@ def parallel_process(
         inputs=inputs,
         recipe=recipe,
         key_transform=key_transform,
-        transform_func=transform_func,
         chunk_size=chunk_size,
         n_jobs=n_jobs,
         test_run=test_run,
@@ -109,7 +107,6 @@ def parallel_process_report(
     inputs: Mapping[str, Any] | None,
     recipe: Path,
     key_transform: TransformFunc | None = None,
-    transform_func: TransformFunc | None = None,
     chunk_size: int = 10_000,
     n_jobs: int = -1,
     test_run: bool = True,
@@ -156,10 +153,7 @@ def parallel_process_report(
         )
 
     shared_inputs = dict(inputs or {})
-    resolved_key_transform = resolve_key_transform(
-        key_transform=key_transform,
-        transform_func=transform_func,
-    )
+    resolved_key_transform = resolve_key_transform(key_transform=key_transform)
 
     def _process_item(
         payload: tuple[int, Mapping[str, Any]],

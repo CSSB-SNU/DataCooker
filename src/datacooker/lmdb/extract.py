@@ -35,7 +35,6 @@ def extract_lmdb_records(
     env_path: Path,
     recipe: Path,
     *,
-    deserialize: DeserializeFunc | None = None,
     inputs: Mapping[str, Any] | None = None,
     metadata_recipe: Path | None = None,
     metadata_input: Mapping[str, Any] | None = None,
@@ -43,8 +42,6 @@ def extract_lmdb_records(
     adapter: ConvertFunc | None = None,
     key_transform: TransformFunc | None = None,
     deserializer: DeserializeFunc | None = None,
-    convert_func: ConvertFunc | None = None,
-    transform_func: TransformFunc | None = None,
     merge_recipe: Path | None = None,
     merge_inputs: Mapping[str, Any] | None = None,
     merge_input_name: str = "data_dict",
@@ -60,17 +57,7 @@ def extract_lmdb_records(
         adapter=adapter,
         deserializer=deserializer,
         key_transform=key_transform,
-        convert_func=convert_func,
-        deserialize=deserialize,
-        transform_func=transform_func,
-    )
-    if reader is not None:
-        resolved_reader = ReaderHooks(
-            loader=reader.loader,
-            adapter=reader.adapter or resolved_reader.adapter,
-            deserializer=reader.deserializer or resolved_reader.deserializer,
-            key_transform=reader.key_transform or resolved_reader.key_transform,
-        )
+    ).merge(reader)
     if resolved_reader.deserializer is None:
         msg = "extract_lmdb_records requires a deserializer or reader.deserializer."
         raise ValueError(msg)

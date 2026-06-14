@@ -11,18 +11,12 @@ from datacooker.utils.importing import resolve_object
 
 DEFAULT_CALLABLE_KEYS = (
     "loader",
-    "load_func",
     "adapter",
-    "transform_func",
     "key_transform",
-    "convert_func",
     "materializer",
-    "project_func",
     "serializer",
-    "serialize",
     "deserializer",
-    "deserialize",
-    "key_func",
+    "key_builder",
 )
 
 

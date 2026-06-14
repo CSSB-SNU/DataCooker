@@ -173,10 +173,6 @@ def _pop_reader_hooks(config: dict[str, Any]) -> ReaderHooks:
         adapter=config.pop("adapter", None),
         deserializer=config.pop("deserializer", None),
         key_transform=config.pop("key_transform", None),
-        load_func=config.pop("load_func", None),
-        convert_func=config.pop("convert_func", None),
-        deserialize=config.pop("deserialize", None),
-        transform_func=config.pop("transform_func", None),
     )
 
 
@@ -186,8 +182,6 @@ def _pop_writer_hooks(config: dict[str, Any]) -> WriterHooks:
         writer_config if isinstance(writer_config, dict) else None,
         serializer=config.pop("serializer", None),
         materializer=config.pop("materializer", None),
-        serialize=config.pop("serialize", None),
-        project_func=config.pop("project_func", None),
     )
 
 

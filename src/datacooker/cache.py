@@ -7,7 +7,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
 
-class ParsingCache:
+class ExecutionContext:
     """
     Store execution inputs and intermediate outputs for a workflow run.
 
@@ -15,6 +15,11 @@ class ParsingCache:
     By default it treats keys as flat strings, but custom transforms
     can allow nested structures (e.g. dot notation).
 
+    Thread-safety: an ``ExecutionContext`` holds mutable per-run state and is
+    **not** safe for concurrent use. One instance belongs to exactly one
+    workflow run on one thread. Concurrency is achieved at a coarser grain by
+    running an independent execution (its own context) per work item — which is
+    what the parallel/LMDB helpers do.
     """
 
     def __init__(
@@ -106,6 +111,3 @@ class ParsingCache:
     def __repr__(self) -> str:
         """Return a concise representation of the stored flat keys."""
         return f"{type(self).__name__}({self.snapshot()!r})"
-
-
-ExecutionContext = ParsingCache

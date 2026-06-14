@@ -35,7 +35,7 @@ def rebuild_entry(
     data: dict[str, Any],
     metadata_dict: Mapping[str, Any],
     parameter_dict: Mapping[str, Any],
-    transform_func: TransformFunc | None,
+    key_transform: TransformFunc | None,
     split_entries: bool,
     extra_kwargs: Mapping[str, Any],
 ) -> dict[str, Any] | None:
@@ -47,7 +47,7 @@ def rebuild_entry(
         rebuilt = parse_dict(
             recipe_path=recipe,
             datadict=datadict,
-            transform_func=transform_func,
+            key_transform=key_transform,
             **extra_kwargs,
         )
         if all(value is None for value in rebuilt.values()):
@@ -68,7 +68,7 @@ def rebuild_entry(
         rebuilt = parse_dict(
             recipe_path=recipe,
             datadict=datadict,
-            transform_func=transform_func,
+            key_transform=key_transform,
             **extra_kwargs,
         )
         if all(value is None for value in rebuilt.values()):

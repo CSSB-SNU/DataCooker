@@ -112,24 +112,20 @@ def read_lmdb(
     env_path: Path,
     key: str,
     *,
-    deserialize: DeserializeFunc,
-    deserializer: DeserializeFunc | None = None,
+    deserializer: DeserializeFunc,
 ) -> dict[str, Any]:
     """Read a decoded entry from an LMDB database."""
     value = read_lmdb_raw(env_path, key)
     if value is None:
         msg = f"Key '{key}' not found in LMDB database at '{env_path}'."
         raise KeyError(msg)
-    resolved_deserializer = deserializer or deserialize
-    return resolved_deserializer(value)
+    return deserializer(value)
 
 
 def build_lmdb(
     *data_list: Path,
     env_path: Path,
     recipe: Path,
-    serialize: SerializeFunc | None = None,
-    key_func: Callable[[Path], str] = default_lmdb_key,
     inputs: Mapping[str, Any] | None = None,
     metadata_recipe: Path | None = None,
     metadata_input: Mapping[str, Any] | None = None,
@@ -138,9 +134,7 @@ def build_lmdb(
     loader: LoadFunc | None = None,
     key_transform: TransformFunc | None = None,
     serializer: SerializeFunc | None = None,
-    key_builder: KeyFunc | None = None,
-    load_func: LoadFunc | None = None,
-    transform_func: TransformFunc | None = None,
+    key_builder: KeyFunc = default_lmdb_key,
     chunk_size: int = 10_000,
     n_jobs: int = -1,
     map_size: int = int(1e12),
@@ -154,30 +148,15 @@ def build_lmdb(
         None,
         loader=loader,
         key_transform=key_transform,
-        load_func=load_func,
-        transform_func=transform_func,
-    )
-    if reader is not None:
-        resolved_reader = ReaderHooks(
-            loader=reader.loader or resolved_reader.loader,
-            adapter=reader.adapter,
-            deserializer=reader.deserializer,
-            key_transform=reader.key_transform or resolved_reader.key_transform,
-        )
+    ).merge(reader)
     resolved_writer = WriterHooks.from_mapping(
         None,
         serializer=serializer,
-        serialize=serialize,
-    )
-    if writer is not None:
-        resolved_writer = WriterHooks(
-            serializer=writer.serializer or resolved_writer.serializer,
-            materializer=writer.materializer,
-        )
+    ).merge(writer)
     if resolved_writer.serializer is None:
         msg = "build_lmdb requires a serializer or writer.serializer."
         raise ValueError(msg)
-    resolved_key_func = key_builder or key_func
+    resolved_key_func = key_builder
     _validate_error_mode(error_mode)
     lmdb_module = _require_lmdb()
     env = lmdb_module.open(str(env_path), map_size=int(map_size))
@@ -236,8 +215,6 @@ def rebuild_lmdb(
     old_env_path: Path,
     new_env_path: Path,
     recipe: Path,
-    serialize: SerializeFunc | None = None,
-    deserialize: DeserializeFunc | None = None,
     parameters: Mapping[str, Any] | None = None,
     metadata_recipe: Path | None = None,
     metadata_input: Mapping[str, Any] | None = None,
@@ -247,8 +224,6 @@ def rebuild_lmdb(
     key_transform: TransformFunc | None = None,
     serializer: SerializeFunc | None = None,
     deserializer: DeserializeFunc | None = None,
-    convert_func: ConvertFunc | None = None,
-    transform_func: TransformFunc | None = None,
     split_entries: bool = False,
     chunk_size: int = 10_000,
     n_jobs: int = -1,
@@ -264,27 +239,11 @@ def rebuild_lmdb(
         adapter=adapter,
         deserializer=deserializer,
         key_transform=key_transform,
-        convert_func=convert_func,
-        deserialize=deserialize,
-        transform_func=transform_func,
-    )
-    if reader is not None:
-        resolved_reader = ReaderHooks(
-            loader=reader.loader,
-            adapter=reader.adapter or resolved_reader.adapter,
-            deserializer=reader.deserializer or resolved_reader.deserializer,
-            key_transform=reader.key_transform or resolved_reader.key_transform,
-        )
+    ).merge(reader)
     resolved_writer = WriterHooks.from_mapping(
         None,
         serializer=serializer,
-        serialize=serialize,
-    )
-    if writer is not None:
-        resolved_writer = WriterHooks(
-            serializer=writer.serializer or resolved_writer.serializer,
-            materializer=writer.materializer,
-        )
+    ).merge(writer)
     if resolved_reader.deserializer is None:
         msg = "rebuild_lmdb requires a deserializer or reader.deserializer."
         raise ValueError(msg)
@@ -326,7 +285,7 @@ def rebuild_lmdb(
                 data=data,
                 metadata_dict=metadata_dict,
                 parameter_dict=parameter_dict,
-                transform_func=resolve_key_transform(
+                key_transform=resolve_key_transform(
                     reader=resolved_reader,
                 ),
                 split_entries=split_entries,

@@ -30,8 +30,7 @@ def run_recipe(
     results = execute(
         recipe,
         dict(inputs),
-        key_transform=key_transform,
-        transform_func=None if reader is None else reader.key_transform,
+        key_transform=key_transform or (reader.key_transform if reader else None),
         targets=targets,
         **extra_kwargs,
     )

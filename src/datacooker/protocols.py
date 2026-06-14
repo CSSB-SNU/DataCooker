@@ -67,11 +67,3 @@ class KeyFunc(Protocol):
     def __call__(self, path: Path) -> str:
         """Return the database key for a given file path."""
         ...
-
-
-FileReader = LoadFunc
-DataAdapter = ConvertFunc
-KeyTransform = TransformFunc
-PayloadWriter = SerializeFunc
-PayloadReader = DeserializeFunc
-ResultWriter = ProjectFunc

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .cache import ExecutionContext
 from .executor import Cooker
@@ -19,7 +19,6 @@ def execute(
     inputs: Mapping[str, Any],
     *,
     key_transform: TransformFunc | None = None,
-    transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
     step_names: Sequence[str] | str | None = None,
     tags: Sequence[str] | str | None = None,
@@ -34,13 +33,10 @@ def execute(
         tags=tags,
         namespaces=namespaces,
     )
-    parse_cache = ExecutionContext(
-        resolve_key_transform(
-            key_transform=key_transform,
-            transform_func=transform_func,
-        )
+    context = ExecutionContext(
+        resolve_key_transform(key_transform=key_transform)
     )
-    cooker = Cooker(parse_cache=parse_cache, recipebook=selected_recipe)
+    cooker = Cooker(context=context, recipebook=selected_recipe)
     cooker.prep(dict(inputs))
     cooker.cook(targets=targets, validate=validate)
     return cooker.serve(targets=targets)
@@ -54,6 +50,7 @@ def describe(
     tags: Sequence[str] | str | None = None,
     namespaces: Sequence[str] | str | None = None,
     available_inputs: Sequence[str] | set[str] | None = None,
+    detail: Literal["full", "compact"] = "full",
 ) -> str:
     """Describe the reachable workflow graph for the requested targets."""
     loaded_recipe = _select_recipebook(
@@ -67,6 +64,7 @@ def describe(
     return loaded_recipe.describe(
         targets=resolved_targets,
         available_inputs=available_inputs,
+        detail=detail,
     )
 
 
@@ -79,6 +77,7 @@ def visualize(
     tags: Sequence[str] | str | None = None,
     namespaces: Sequence[str] | str | None = None,
     available_inputs: Sequence[str] | set[str] | None = None,
+    detail: Literal["full", "compact"] = "full",
 ) -> str:
     """Render a workflow graph in Mermaid or DOT format."""
     loaded_recipe = _select_recipebook(
@@ -93,18 +92,17 @@ def visualize(
         output_format=output_format,
         targets=resolved_targets,
         available_inputs=available_inputs,
+        detail=detail,
     )
 
 
 def parse_file(
     recipe_path: RecipeBook | str | Path,
     file_path: Path,
-    load_func: LoadFunc | None = None,
+    loader: LoadFunc | None = None,
     inputs: Mapping[str, Any] | None = None,
     *,
-    loader: LoadFunc | None = None,
     key_transform: TransformFunc | None = None,
-    transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
     step_names: Sequence[str] | str | None = None,
     tags: Sequence[str] | str | None = None,
@@ -115,7 +113,7 @@ def parse_file(
     """Load a file, merge additional inputs, and execute the requested recipe."""
     data_dict = load_inputs(
         file_path,
-        loader=loader or load_func,
+        loader=loader,
         base_inputs=inputs,
         **extra_kwargs,
     )
@@ -123,7 +121,6 @@ def parse_file(
         recipe_path,
         data_dict,
         key_transform=key_transform,
-        transform_func=transform_func,
         targets=targets,
         step_names=step_names,
         tags=tags,
@@ -137,7 +134,6 @@ def parse_dict(
     datadict: Mapping[str, Any],
     *,
     key_transform: TransformFunc | None = None,
-    transform_func: TransformFunc | None = None,
     targets: Sequence[str] | str | None = None,
     step_names: Sequence[str] | str | None = None,
     tags: Sequence[str] | str | None = None,
@@ -152,68 +148,11 @@ def parse_dict(
         recipe_path,
         data_dict,
         key_transform=key_transform,
-        transform_func=transform_func,
         targets=targets,
         step_names=step_names,
         tags=tags,
         namespaces=namespaces,
         validate=validate,
-    )
-
-
-def parse(
-    recipe_path: RecipeBook | str | Path,
-    file_path: Path,
-    load_func: LoadFunc,
-    *,
-    loader: LoadFunc | None = None,
-    key_transform: TransformFunc | None = None,
-    transform_func: TransformFunc | None = None,
-    targets: Sequence[str] | str | None = None,
-    step_names: Sequence[str] | str | None = None,
-    tags: Sequence[str] | str | None = None,
-    namespaces: Sequence[str] | str | None = None,
-    **extra_kwargs: Any,
-) -> dict[str, Any]:
-    """Backward-compatible alias for :func:`parse_file`."""
-    return parse_file(
-        recipe_path,
-        file_path,
-        load_func,
-        loader=loader,
-        key_transform=key_transform,
-        transform_func=transform_func,
-        targets=targets,
-        step_names=step_names,
-        tags=tags,
-        namespaces=namespaces,
-        **extra_kwargs,
-    )
-
-
-def rebuild(
-    recipe_path: RecipeBook | str | Path,
-    datadict: Mapping[str, Any],
-    *,
-    key_transform: TransformFunc | None = None,
-    transform_func: TransformFunc | None = None,
-    targets: Sequence[str] | str | None = None,
-    step_names: Sequence[str] | str | None = None,
-    tags: Sequence[str] | str | None = None,
-    namespaces: Sequence[str] | str | None = None,
-    **extra_kwargs: Any,
-) -> dict[str, Any]:
-    """Backward-compatible alias for :func:`parse_dict`."""
-    return parse_dict(
-        recipe_path,
-        datadict,
-        key_transform=key_transform,
-        transform_func=transform_func,
-        targets=targets,
-        step_names=step_names,
-        tags=tags,
-        namespaces=namespaces,
-        **extra_kwargs,
     )
 
 
