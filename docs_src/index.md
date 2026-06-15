@@ -1,14 +1,29 @@
 # DataCooker (Concepts)
 
-DataCooker is a small **static-workflow engine** for biomolecular data. You
-declare *what* you want to build (**targets**) and *how* to compute it
+DataCooker is a small, **domain-agnostic static-workflow engine**. You declare
+*what* you want to build (**targets**) and *how* to compute it
 (**instructions**) with **inputs** that reference other targets. The engine
 turns those declarations into a dependency graph, resolves the order, runs each
 step once, caches results, and returns the outputs you asked for.
 
-The same recipe can be run on an in-memory dict, on a single file, or fanned
-out over a whole directory into an LMDB — only the surrounding I/O changes, not
-the recipe.
+DataCooker knows nothing about any particular data type — instructions are
+plain callables, and values are whatever you put in the cache. The same recipe
+can be run on an in-memory dict, on a single file, or fanned out over a whole
+directory into an LMDB; only the surrounding I/O changes, not the recipe.
+
+!!! info "DataCooker vs. StructCooker — where the boundary is"
+    **DataCooker** (this site) is the **generic engine**: RecipeBook, the
+    Cooker, hooks, and the LMDB workflows. It ships only domain-agnostic
+    helpers (e.g. `merge_dict`, `key_stack`, `single_value_instruction`).
+
+    **StructCooker** is a **separate package built on top of DataCooker** that
+    supplies the *biomolecular domain*: structure/MSA/template readers,
+    `CIFMol`/`TemplateMol` objects, and the recipes that ingest those datasets.
+
+    Rule of thumb: anything tied to molecules, sequences, or structures lives in
+    StructCooker; anything about *running recipes* lives here. Examples in these
+    docs stay domain-neutral on purpose — see StructCooker's own docs for
+    biomolecular recipes.
 
 ## The big picture
 

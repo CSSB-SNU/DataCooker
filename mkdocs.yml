@@ -1,5 +1,5 @@
 site_name: DataCooker
-site_description: A small static-workflow recipe engine for biomolecular data.
+site_description: A small, domain-agnostic static-workflow recipe engine.
 site_url: https://CSSB-SNU.github.io/DataCooker/
 repo_url: https://github.com/CSSB-SNU/DataCooker
 repo_name: CSSB-SNU/DataCooker
