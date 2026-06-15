@@ -1,0 +1,35 @@
+site_name: DataCooker
+site_description: A small static-workflow recipe engine for biomolecular data.
+repo_url: https://github.com/CSSB-SNU/DataCooker
+docs_dir: docs_src
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - footnotes
+  - def_list
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Concepts: index.md
+  - Getting Started: getting-started.md
+  - Tutorials:
+      - Overview: tutorials.md
+      - Write a recipe: tutorials/make_recipe_basic.md
+      - Build an LMDB: tutorials/build_lmdb.md
+  - API: api.md
