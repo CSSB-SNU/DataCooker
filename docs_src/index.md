@@ -22,7 +22,7 @@ directory into an LMDB; only the surrounding I/O changes, not the recipe.
 
     Rule of thumb: anything tied to molecules, sequences, or structures lives in
     StructCooker; anything about *running recipes* lives here. Examples in these
-    docs stay domain-neutral on purpose — see StructCooker's own docs for
+    docs stay domain-neutral on purpose — see the [StructCooker docs](https://SanggeunParrk.github.io/StructCooker/) for
     biomolecular recipes.
 
 ## The big picture
