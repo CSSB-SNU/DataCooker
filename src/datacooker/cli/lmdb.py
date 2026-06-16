@@ -38,15 +38,24 @@ def build_command(
 ) -> None:
     """Build an LMDB from scanned files plus a DataCooker recipe."""
     config = load_config(config_path)
-    data_dir = Path(pop_config_value(config, "data_dir"))
-    file_pattern = str(pop_config_value(config, "file_pattern", default="*"))
+    file_list = pop_config_value(config, "file_list", default=None)
+    if file_list is None:
+        data_dir = Path(pop_config_value(config, "data_dir"))
+        file_pattern = str(pop_config_value(config, "file_pattern", default="*"))
+    else:
+        pop_config_value(config, "data_dir", default=None)
+        pop_config_value(config, "file_pattern", default=None)
     coerce_path(config, "env_path")
     _normalize_recipe_alias(config)
     coerce_path(config, "metadata_recipe")
     config["reader"] = _pop_reader_hooks(config)
     config["writer"] = _pop_writer_hooks(config)
 
-    data_list = scan_paths(data_dir, pattern=file_pattern)
+    if file_list is not None:
+        with Path(file_list).open() as handle:
+            data_list = [Path(line.strip()) for line in handle if line.strip()]
+    else:
+        data_list = scan_paths(data_dir, pattern=file_pattern)
     if shard_idx is not None:
         if shard_idx < 0 or shard_idx >= n_shards:
             msg = f"Invalid shard index {shard_idx} for {n_shards} shards."
