@@ -7,16 +7,21 @@ from typing import Any
 
 import click
 
-from datacooker import scan_paths, shard_items
+from datacooker import scan_paths
 from datacooker.cli._common import coerce_path, pop_config_value, with_shard_suffix
 from datacooker.config import load_config
 from datacooker.lmdb import (
     build_lmdb,
     count_lmdb_entries,
+    default_lmdb_key,
     merge_lmdb_shards,
     rebuild_lmdb,
+    rekey_lmdb,
+    suffix_key_map,
 )
 from datacooker.readers import ReaderHooks
+from datacooker.utils.importing import resolve_object
+from datacooker.utils.sharding import shard_items_by_key
 from datacooker.writers import WriterHooks
 
 
@@ -30,15 +35,43 @@ def cli() -> None:
 @click.option("--map-size", type=int, default=None, help="Override LMDB map size.")
 @click.option("--shard-idx", type=int, default=None, help="0-based shard index.")
 @click.option("--n-shards", type=int, default=1, show_default=True)
+@click.option("--file-list", "file_list_override",
+              type=click.Path(exists=True, path_type=Path), default=None,
+              help="Process only the files in this list (e.g. a planner size tier).")
+@click.option("--output", type=click.Path(path_type=Path), default=None,
+              help="Override env_path (e.g. per tier-shard output).")
+@click.option("--n-jobs", "n_jobs", type=int, default=None,
+              help="Override worker count (per size tier); advisory under the Ray backend.")
+@click.option("--chunk-size", "chunk_size", type=int, default=None,
+              help="Results buffered before writing (default 10k lets it hoard tens of "
+                   "GB and OOM); planner sets ~a few x n_jobs.")
+@click.option("--skip-existing", is_flag=True, default=False,
+              help="Resume: skip keys already in the output (idempotent re-run).")
 def build_command(
     config_path: Path,
     map_size: int | None,
     shard_idx: int | None,
     n_shards: int,
+    file_list_override: Path | None,
+    output: Path | None,
+    n_jobs: int | None,
+    chunk_size: int | None,
+    skip_existing: bool,
 ) -> None:
     """Build an LMDB from scanned files plus a DataCooker recipe."""
     config = load_config(config_path)
-    file_list = pop_config_value(config, "file_list", default=None)
+    if output is not None:
+        config["env_path"] = output
+    if n_jobs is not None:
+        config["n_jobs"] = n_jobs
+    if chunk_size is not None:
+        config["chunk_size"] = chunk_size
+    if skip_existing:
+        config["skip_existing"] = True
+    # Always pop the config's file_list (avoid leaking it into build_lmdb kwargs);
+    # an explicit --file-list overrides it (e.g. a planner size tier).
+    config_file_list = pop_config_value(config, "file_list", default=None)
+    file_list = file_list_override or config_file_list
     if file_list is None:
         data_dir = Path(pop_config_value(config, "data_dir"))
         file_pattern = str(pop_config_value(config, "file_pattern", default="*"))
@@ -60,7 +93,21 @@ def build_command(
         if shard_idx < 0 or shard_idx >= n_shards:
             msg = f"Invalid shard index {shard_idx} for {n_shards} shards."
             raise click.ClickException(msg)
-        data_list = shard_items(data_list, node_rank=shard_idx, node_count=n_shards)
+        # Shard by a stable hash of each file's LMDB key (not list position), so
+        # the same record always lands in the same shard regardless of scan
+        # order / which run builds which shard. Positional striping over an
+        # unsorted scan let the same key land in different shards across re-runs,
+        # producing cross-shard duplicate keys in the merged output.
+        key_builder = config.get("key_builder", default_lmdb_key)
+        key_func = (
+            resolve_object(key_builder) if isinstance(key_builder, str) else key_builder
+        )
+        data_list = shard_items_by_key(
+            data_list,
+            key_func=key_func,
+            node_rank=shard_idx,
+            node_count=n_shards,
+        )
         env_path = coerce_path(config, "env_path")
         if env_path is None:
             msg = "env_path is required in the LMDB build config."
@@ -86,7 +133,27 @@ def build_command(
 @cli.command("rebuild")
 @click.argument("config_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--map-size", type=int, default=None, help="Override LMDB map size.")
-def rebuild_command(config_path: Path, map_size: int | None) -> None:
+@click.option("--shard-idx", type=int, default=None, help="0-based shard index.")
+@click.option("--n-shards", type=int, default=1, show_default=True)
+@click.option("--key-list", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Process only the keys in this file (one per line), e.g. a size tier.")
+@click.option("--output", type=click.Path(path_type=Path), default=None,
+              help="Override new_env_path (e.g. per tier-shard output).")
+@click.option("--n-jobs", "n_jobs", type=int, default=None,
+              help="Override worker count (per size tier); advisory under the Ray backend.")
+@click.option("--chunk-size", "chunk_size", type=int, default=None,
+              help="Results buffered before writing; the 10k default lets the drain "
+                   "hoard tens of GB and OOM. Planner sets ~a few x n_jobs.")
+def rebuild_command(
+    config_path: Path,
+    map_size: int | None,
+    shard_idx: int | None,
+    n_shards: int,
+    key_list: Path | None,
+    output: Path | None,
+    n_jobs: int | None,
+    chunk_size: int | None,
+) -> None:
     """Rebuild an LMDB through another DataCooker recipe."""
     config = load_config(config_path)
     coerce_path(config, "old_env_path")
@@ -97,6 +164,26 @@ def rebuild_command(config_path: Path, map_size: int | None) -> None:
     config["writer"] = _pop_writer_hooks(config)
     if map_size is not None:
         config["map_size"] = map_size
+    if output is not None:
+        config["new_env_path"] = output
+    if key_list is not None:
+        config["key_list"] = key_list
+    if n_jobs is not None:
+        config["n_jobs"] = n_jobs
+    if chunk_size is not None:
+        config["chunk_size"] = chunk_size
+
+    if shard_idx is not None:
+        if shard_idx < 0 or shard_idx >= n_shards:
+            msg = f"Invalid shard index {shard_idx} for {n_shards} shards."
+            raise click.ClickException(msg)
+        new_env_path = coerce_path(config, "new_env_path")
+        if new_env_path is None:
+            msg = "new_env_path is required in the LMDB rebuild config."
+            raise click.ClickException(msg)
+        config["new_env_path"] = with_shard_suffix(new_env_path, shard_idx)
+        config["shard_idx"] = shard_idx
+        config["n_shards"] = n_shards
 
     report = rebuild_lmdb(**config)
     new_env_path = coerce_path(config, "new_env_path")
@@ -107,6 +194,52 @@ def rebuild_command(config_path: Path, map_size: int | None) -> None:
         f"rebuilt {new_env_path} "
         f"(attempted={report.attempted}, written={report.written}, "
         f"skipped_existing={report.skipped_existing}, failed={report.failed})"
+    )
+    click.echo(f"entries={count_lmdb_entries(new_env_path)}")
+
+
+@cli.command("rekey")
+@click.argument("config_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--map-size", type=int, default=None, help="Override LMDB map size.")
+def rekey_command(config_path: Path, map_size: int | None) -> None:
+    """Copy an LMDB to a new database, transforming keys but copying values as-is.
+
+    The config needs ``old_env_path`` and ``new_env_path`` plus exactly one key
+    rule: ``suffix`` (append a constant string) or ``key_map`` (dotted import
+    path to a ``(str) -> str | None`` callable). Optional keys: ``map_size``,
+    ``commit_every``, ``skip_existing``, ``on_duplicate``, ``append``.
+    """
+    config = load_config(config_path)
+    old_env_path = coerce_path(config, "old_env_path")
+    new_env_path = coerce_path(config, "new_env_path")
+    if old_env_path is None or new_env_path is None:
+        msg = "old_env_path and new_env_path are required in the rekey config."
+        raise click.ClickException(msg)
+
+    kwargs: dict[str, Any] = {
+        "old_env_path": old_env_path,
+        "new_env_path": new_env_path,
+        "key_map": _resolve_key_map(config),
+    }
+    for option in (
+        "map_size",
+        "commit_every",
+        "skip_existing",
+        "on_duplicate",
+        "append",
+    ):
+        if option in config:
+            kwargs[option] = config[option]
+    if map_size is not None:
+        kwargs["map_size"] = map_size
+
+    report = rekey_lmdb(**kwargs)
+    click.echo(
+        f"rekeyed {new_env_path} "
+        f"(attempted={report.attempted}, written={report.written}, "
+        f"skipped_existing={report.skipped_existing}, "
+        f"duplicate_keys={report.duplicate_keys}, "
+        f"skipped_empty={report.skipped_empty})"
     )
     click.echo(f"entries={count_lmdb_entries(new_env_path)}")
 
@@ -123,9 +256,21 @@ def rebuild_command(config_path: Path, map_size: int | None) -> None:
 @click.option("--overwrite", is_flag=True, help="Overwrite the output if it exists.")
 @click.option(
     "--on-duplicate",
-    type=click.Choice(["overwrite", "skip", "error"]),
+    type=click.Choice(["overwrite", "skip", "error", "union"]),
     default="overwrite",
     show_default=True,
+)
+@click.option(
+    "--value-deserializer",
+    type=str,
+    default=None,
+    help="Dotted path to a bytes->dict decoder (required for --on-duplicate union).",
+)
+@click.option(
+    "--value-serializer",
+    type=str,
+    default=None,
+    help="Dotted path to a dict->bytes encoder (required for --on-duplicate union).",
 )
 def merge_command(
     shard_pattern: str,
@@ -133,6 +278,8 @@ def merge_command(
     map_size: int,
     overwrite: bool,
     on_duplicate: str,
+    value_deserializer: str | None,
+    value_serializer: str | None,
 ) -> None:
     """Merge shard LMDBs matched by a glob pattern."""
     pattern_path = Path(shard_pattern)
@@ -141,12 +288,19 @@ def merge_command(
         msg = f"No LMDB files matched: {shard_pattern}"
         raise click.ClickException(msg)
 
+    deserializer = (
+        resolve_object(value_deserializer) if value_deserializer else None
+    )
+    serializer = resolve_object(value_serializer) if value_serializer else None
+
     merge_lmdb_shards(
         shard_paths,
         output,
         map_size=map_size,
         overwrite=overwrite,
         on_duplicate=on_duplicate,
+        value_deserializer=deserializer,
+        value_serializer=serializer,
     )
     click.echo(f"merged {len(shard_paths)} shards into {output}")
     click.echo(f"entries={count_lmdb_entries(output)}")
@@ -157,6 +311,92 @@ def merge_command(
 def count_command(env_path: Path) -> None:
     """Count the number of records in an LMDB."""
     click.echo(f"{env_path}: {count_lmdb_entries(env_path)}")
+
+
+@cli.command("index")
+@click.argument("db_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--schema", default="unknown", help="schema class A-F for meta.json")
+@click.option("--key-convention", default="unknown")
+@click.option("--codec", default="biomol_zstd")
+@click.option("--source", default=None, help="lineage: DB this was built from")
+@click.option("--recipe", "recipe", default=None)
+@click.option("--expansion", type=float, default=None, help="measured E for the planner")
+def index_command(db_path, schema, key_convention, codec, source, recipe, expansion) -> None:
+    """Write a DB's per-item size sidecar + metadata descriptor (mandatory
+    post-step of every build)."""
+    from datacooker.lmdb.index import DbMeta, write_index, write_meta
+
+    stats = write_index(db_path)
+    write_meta(db_path, DbMeta(
+        schema=schema, key_convention=key_convention, codec=codec,
+        entries=stats.entries, total_bytes=stats.total_bytes,
+        max_bytes=stats.max_bytes, expansion=expansion, source=source, recipe=recipe,
+    ))
+    click.echo(f"indexed {db_path}: entries={stats.entries} "
+               f"max_bytes={stats.max_bytes} n_gt_1GB={stats.n_gt_1gb}")
+
+
+@cli.command("pipeline")
+@click.argument("engine_config", type=click.Path(exists=True, path_type=Path))
+@click.option("--workdir", type=click.Path(path_type=Path), required=True,
+              help="scratch for item-lists, sbatch scripts, logs")
+@click.option("--expansion", type=float, default=100.0)
+@click.option("--include-keys", type=click.Path(exists=True, path_type=Path), default=None,
+              help="rebuild only: restrict to this key subset (e.g. a date-scoped set)")
+@click.option("--schema", default="unknown")
+@click.option("--node-mem-gb", type=float, default=490.0)
+@click.option("--cores", type=int, default=112)
+@click.option("--n-nodes", type=int, default=8)
+@click.option("--repo", type=click.Path(path_type=Path), default=None)
+@click.option("--dry-run", is_flag=True, help="plan + write scripts, do not sbatch")
+def pipeline_command(engine_config, workdir, expansion, include_keys, schema,
+                     node_mem_gb, cores, n_nodes, repo, dry_run) -> None:
+    """Planning-first build/rebuild: size the items, plan size tiers, submit tier
+    arrays + merge + index -- all chained. Op is inferred from the engine config
+    (old_env_path => rebuild; env_path + file_list/data_dir => build)."""
+    from datacooker.executors.slurm import SlurmExecutor
+    from datacooker.lmdb.index import ItemSize, read_index, write_index
+    from datacooker.pipeline import PipelineConfig, run
+    from datacooker.planning import NodeSpec
+
+    raw = load_config(engine_config)
+    coerce_path(raw, "old_env_path")
+    coerce_path(raw, "new_env_path")
+    coerce_path(raw, "env_path")
+
+    if raw.get("old_env_path") is not None:            # ---- rebuild ----
+        op, source, target = "rebuild", raw["old_env_path"], raw["new_env_path"]
+        sizes = read_index(source)
+        if not sizes:
+            click.echo(f"source index missing -> building {source}.index.tsv")
+            write_index(source)
+            sizes = read_index(source)
+        if include_keys:
+            keep = {ln.strip() for ln in Path(include_keys).read_text().splitlines() if ln.strip()}
+            sizes = [s for s in sizes if s.key in keep]
+    elif raw.get("env_path") is not None:              # ---- build ----
+        op, source, target = "build", None, raw["env_path"]
+        file_list = raw.get("file_list")
+        if file_list is not None:
+            files = [Path(ln.strip()) for ln in Path(file_list).read_text().splitlines() if ln.strip()]
+        else:
+            files = list(scan_paths(Path(raw["data_dir"]), pattern=str(raw.get("file_pattern", "*"))))
+        sizes = [ItemSize(str(f), f.stat().st_size) for f in files]
+    else:
+        msg = "engine config needs old_env_path (rebuild) or env_path+file source (build)."
+        raise click.ClickException(msg)
+
+    pcfg = PipelineConfig(
+        op=op, source=source, target=target, engine_config=engine_config,
+        expansion=expansion, schema=schema,
+        node=NodeSpec(mem_gb=node_mem_gb, cores=cores, n_nodes=n_nodes),
+    )
+    execu = SlurmExecutor(
+        workdir=Path(workdir), repo=Path(repo) if repo else Path.cwd(),
+        submit=not dry_run,
+    )
+    handle = run(pcfg, execu, keyfiles_dir=Path(workdir) / "items", sizes=sizes)
+    click.echo(f"pipeline submitted; final stage = {handle.name} ({handle.job_id})")
 
 
 def main() -> None:
@@ -171,7 +411,23 @@ def _normalize_recipe_alias(config: dict[str, Any]) -> None:
     recipe_path = config.pop("recipe_path", None)
     if recipe_path is None:
         return
-    config["recipe"] = Path(recipe_path) if isinstance(recipe_path, str) else recipe_path
+    config["recipe"] = (
+        Path(recipe_path) if isinstance(recipe_path, str) else recipe_path
+    )
+
+
+def _resolve_key_map(config: dict[str, Any]) -> Any:
+    """Resolve the rekey ``key_map`` from a config's ``suffix``/``key_map`` field."""
+    suffix = config.pop("suffix", None)
+    key_map = config.pop("key_map", None)
+    if suffix is not None:
+        if key_map is not None:
+            msg = "Specify only one of 'suffix' or 'key_map' in the rekey config."
+            raise click.ClickException(msg)
+        return suffix_key_map(str(suffix))
+    if isinstance(key_map, str):
+        return resolve_object(key_map)
+    return key_map
 
 
 def _pop_reader_hooks(config: dict[str, Any]) -> ReaderHooks:

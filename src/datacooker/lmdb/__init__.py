@@ -7,6 +7,7 @@ from .core import (
     build_lmdb,
     count_lmdb_entries,
     default_lmdb_key,
+    explode_source_key,
     extract_lmdb_keys,
     filter_pending_lmdb_paths,
     merge_lmdb_shards,
@@ -14,6 +15,8 @@ from .core import (
     read_lmdb,
     read_lmdb_raw,
     rebuild_lmdb,
+    rekey_lmdb,
+    suffix_key_map,
 )
 from .extract import extract_lmdb_records
 
@@ -22,6 +25,7 @@ __all__ = [
     "build_lmdb",
     "count_lmdb_entries",
     "default_lmdb_key",
+    "explode_source_key",
     "extract_lmdb_keys",
     "extract_lmdb_records",
     "filter_pending_lmdb_paths",
@@ -30,4 +34,6 @@ __all__ = [
     "read_lmdb",
     "read_lmdb_raw",
     "rebuild_lmdb",
+    "rekey_lmdb",
+    "suffix_key_map",
 ]

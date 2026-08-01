@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import signal
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,32 @@ from datacooker.protocols import ConvertFunc, DeserializeFunc, TransformFunc
 from datacooker.readers import ReaderHooks, decode_payload, resolve_key_transform
 
 logger = logging.getLogger(__name__)
+
+
+class _RecordTimeout(Exception):
+    """One record exceeded its per-record extract budget."""
+
+
+def _alarm(signum: int, frame: Any) -> None:  # noqa: ANN401, ARG001
+    raise _RecordTimeout
+
+
+def _with_record_timeout(seconds: float | None):
+    """Per-record watchdog: SIGALRM interrupts the (pure-Python) recipe loop so a
+    pathological entry (e.g. a mega-assembly with a huge contact graph -> minutes
+    in the interface loop) is SKIPPED via the caller's ``except``, not left to hang
+    the whole extract. Unlike joblib's ``timeout`` it does not abort the run; unlike
+    a C-level hang it works only because ``extract_edge_node`` is Python-loop bound.
+    Worker/main-thread only (loky workers qualify); a no-op when seconds is falsy."""
+    class _Guard:
+        def __enter__(self) -> None:
+            if seconds:
+                signal.signal(signal.SIGALRM, _alarm)
+                signal.setitimer(signal.ITIMER_REAL, float(seconds))
+        def __exit__(self, *exc: object) -> None:
+            if seconds:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+    return _Guard()
 
 
 def _require_deserializer(reader: ReaderHooks) -> None:
@@ -49,6 +76,7 @@ def extract_lmdb_records(
     n_jobs: int = -1,
     test_run: bool = True,
     prefer: str = "processes",
+    task_timeout: float | None = None,
     **extra_kwargs: Any,
 ) -> dict[str, Any]:
     """Extract recipe outputs from every LMDB record and optionally merge them."""
@@ -90,12 +118,16 @@ def extract_lmdb_records(
             datadict = {"key": key, "db_data": data}
             datadict.update(base_inputs)
             datadict.update(metadata_dict)
-            result = parse_dict(
-                datadict=datadict,
-                recipe_path=recipe,
-                key_transform=resolve_key_transform(reader=resolved_reader),
-                **extra_kwargs,
-            )
+            with _with_record_timeout(task_timeout):
+                result = parse_dict(
+                    datadict=datadict,
+                    recipe_path=recipe,
+                    key_transform=resolve_key_transform(reader=resolved_reader),
+                    **extra_kwargs,
+                )
+        except _RecordTimeout:
+            logger.error("Timeout extracting %s (> %ss) -- skipped", key, task_timeout)
+            return key, {}, _RecordTimeout(f"{key} exceeded {task_timeout}s")
         except Exception as error:  # noqa: BLE001
             return key, {}, error
         return key, result, None

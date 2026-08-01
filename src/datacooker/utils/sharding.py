@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TypeVar
 
 logger = logging.getLogger(__name__)
@@ -65,5 +66,37 @@ def shard_items(
     node_rank: int,
     node_count: int,
 ) -> list[ItemT]:
-    """Return the sub-sequence assigned to the given node."""
+    """Return the sub-sequence assigned to the given node by list position.
+
+    WARNING: positional striping is only a stable disjoint partition if every
+    build sees the exact same ordered ``items``. Across separate runs (e.g.
+    re-running individual shards) the scan order can differ, so the same logical
+    record lands in different shards and the merged output ends up with
+    duplicate keys. Prefer :func:`shard_items_by_key` for content that is
+    sharded across multiple independent jobs.
+    """
     return [item for index, item in enumerate(items) if index % node_count == node_rank]
+
+
+def shard_items_by_key(
+    items: Sequence[ItemT],
+    *,
+    key_func: Callable[[ItemT], object],
+    node_rank: int,
+    node_count: int,
+) -> list[ItemT]:
+    """Return the items whose key hashes to ``node_rank``.
+
+    Shards by a stable hash of each item's key (md5 of its string form) rather
+    than list position, so a given key always maps to the same shard regardless
+    of scan order, file-set changes, or which run built which shard. This makes
+    the shard set a true disjoint partition by key even when shards are built or
+    re-run independently. ``hashlib`` is used (not the builtin ``hash``, which is
+    salted per-process and would not be reproducible across runs).
+    """
+    selected: list[ItemT] = []
+    for item in items:
+        digest = hashlib.md5(str(key_func(item)).encode()).hexdigest()  # noqa: S324
+        if int(digest, 16) % node_count == node_rank:
+            selected.append(item)
+    return selected
