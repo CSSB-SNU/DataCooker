@@ -63,12 +63,17 @@ def run(
     executor: Executor,
     keyfiles_dir: Path,
     sizes: list[ItemSize],
+    depends_on: tuple[str, ...] = (),
 ) -> TaskHandle:
     """Plan ``sizes`` into tiers and submit tier arrays -> merge -> index, chained.
 
     ``sizes`` are (item_id, bytes): item_id is an LMDB key (rebuild) or a source
     file path (build); ``bytes`` is stored value size or file size. The caller
     supplies them so this driver stays op-agnostic.
+
+    ``depends_on`` are upstream job ids the FIRST stage (the tier arrays) must wait
+    for -- this is how a multi-DB build chains one config's whole pipeline after
+    another's (e.g. cif_attached's tiers afterok cif's index).
     """
     keyfiles_dir = Path(keyfiles_dir)
     keyfiles_dir.mkdir(parents=True, exist_ok=True)
@@ -108,6 +113,7 @@ def run(
             n_shards=len(shards),
             mem_gb=tier.mem_gb,
             cores=cfg.node.cores,
+            depends_on=depends_on,
         ))
 
     # merge (afterok all tiers)

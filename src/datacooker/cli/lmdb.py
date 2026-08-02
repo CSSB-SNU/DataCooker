@@ -348,9 +348,12 @@ def index_command(db_path, schema, key_convention, codec, source, recipe, expans
 @click.option("--cores", type=int, default=112)
 @click.option("--n-nodes", type=int, default=8)
 @click.option("--repo", type=click.Path(path_type=Path), default=None)
+@click.option("--depends-on", "depends_on", default="",
+              help="comma-separated upstream job ids the tier arrays afterok-wait "
+                   "on (multi-DB chaining: this DB starts after upstream DBs finish)")
 @click.option("--dry-run", is_flag=True, help="plan + write scripts, do not sbatch")
 def pipeline_command(engine_config, workdir, expansion, include_keys, schema,
-                     node_mem_gb, cores, n_nodes, repo, dry_run) -> None:
+                     node_mem_gb, cores, n_nodes, repo, depends_on, dry_run) -> None:
     """Planning-first build/rebuild: size the items, plan size tiers, submit tier
     arrays + merge + index -- all chained. Op is inferred from the engine config
     (old_env_path => rebuild; env_path + file_list/data_dir => build)."""
@@ -395,8 +398,13 @@ def pipeline_command(engine_config, workdir, expansion, include_keys, schema,
         workdir=Path(workdir), repo=Path(repo) if repo else Path.cwd(),
         submit=not dry_run,
     )
-    handle = run(pcfg, execu, keyfiles_dir=Path(workdir) / "items", sizes=sizes)
+    deps = tuple(d for d in (depends_on or "").split(",") if d.strip())
+    handle = run(pcfg, execu, keyfiles_dir=Path(workdir) / "items", sizes=sizes,
+                 depends_on=deps)
     click.echo(f"pipeline submitted; final stage = {handle.name} ({handle.job_id})")
+    # Machine-parseable terminal job id so a multi-DB driver can afterok-chain the
+    # next config's pipeline onto this one's final (index) stage.
+    click.echo(f"PIPELINE_TERMINAL_JOB={handle.job_id or ''}")
 
 
 def main() -> None:
