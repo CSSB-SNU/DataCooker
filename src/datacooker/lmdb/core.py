@@ -362,6 +362,7 @@ def build_lmdb(
     resolved_key_func = key_builder
     _validate_error_mode(error_mode)
     lmdb_module = _require_lmdb()
+    Path(env_path).parent.mkdir(parents=True, exist_ok=True)
     env = lmdb_module.open(str(env_path), map_size=int(map_size))
     metadata_dict = load_metadata(
         metadata_recipe=metadata_recipe,
@@ -491,6 +492,7 @@ def rebuild_lmdb(
         raise ValueError(msg)
     _validate_error_mode(error_mode)
     lmdb_module = _require_lmdb()
+    Path(new_env_path).parent.mkdir(parents=True, exist_ok=True)
     new_env = lmdb_module.open(str(new_env_path), map_size=int(map_size))
     metadata_dict = load_metadata(
         metadata_recipe=metadata_recipe,
@@ -652,6 +654,7 @@ def rekey_lmdb(
         lock=False,
         readahead=True,
     )
+    Path(new_env_path).parent.mkdir(parents=True, exist_ok=True)
     new_env = lmdb_module.open(str(new_env_path), map_size=int(map_size))
     try:
         stats = _stream_rekey(
