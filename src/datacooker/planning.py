@@ -1,30 +1,19 @@
-"""Size-aware execution planner.
+"""Execution planner for the Ray fan-out.
 
-Turns per-item sizes (from ``lmdb.index``) + a node spec into a memory-safe,
-throughput-optimal PLAN: items are partitioned into size tiers, and each tier is
-assigned the worker count / memory / shard count it can safely afford. Giants run
-in their own low-concurrency lane while the small majority runs at full cores --
-so a heavy per-item build (CIFMol reconstruction, ~E x value_bytes live) never
-exhausts node RAM the way a memory-blind hash-shard does.
+Within-node memory is **Ray's** job now (measured admission control -- it throttles
+and retries tasks by real node memory), so the planner no longer predicts per-item
+memory (the old ``peak = n_jobs x E x max_bytes`` model that OOM'd on its blind
+spots). It does only what Ray does not: decide **how many nodes** to spread a build
+across, and **balance** heavy items across them so no shard is lopsided.
 
-Memory model (one item in flight per worker):
-
-    peak_item_live  ~= expansion * value_bytes           # E, measured per recipe
-    safe n_jobs      = clamp(floor(budget / (E * tier_max_bytes)), 1, cores)
-    budget           = node_mem * safety - base
-
-Under the Ray fan-out these ``n_jobs`` values are advisory (Ray sizes concurrency
-to measured node memory); the planner is kept for the parts Ray does not do --
-the cross-node shard count and the per-tier SLURM ``--mem`` request.
+Every shard is given the **whole node** (``mem_gb`` / ``cores``); Ray self-regulates
+inside that. ``expansion`` (E) survives only as a recorded stat, not a knob.
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 from datacooker.lmdb.index import ItemSize, human
-
-GB = 1024**3
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,27 +21,16 @@ class NodeSpec:
     mem_gb: float = 490.0
     cores: int = 112
     n_nodes: int = 8
-    mem_safety: float = 0.85
-    base_gb: float = 130.0            # source mmap page cache + parent + slack
-    giant_njobs_ceiling: int = 8      # items forcing n_jobs below this are 'giant'
-
-    @property
-    def budget_bytes(self) -> float:
-        return (self.mem_gb * self.mem_safety - self.base_gb) * GB
 
 
 @dataclass(frozen=True, slots=True)
 class Tier:
     name: str
     keys: tuple[str, ...]
-    n_jobs: int
-    mem_gb: int
+    n_jobs: int          # advisory under Ray (it sizes to node CPUs)
+    mem_gb: int          # SLURM --mem per shard (whole node)
     n_shards: int
     max_bytes: int
-
-    @property
-    def total_bytes(self) -> int:
-        return 0  # filled by the planner via replace-free construction below
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,8 +44,8 @@ class Plan:
 
     def describe(self) -> str:
         lines = [
-            f"budget/worker-lane={human(self.node.budget_bytes)}  "
-            f"E={self.expansion} cores={self.node.cores} nodes={self.node.n_nodes}",
+            f"ray fan-out: cores={self.node.cores} nodes<={self.node.n_nodes} "
+            f"(within-node memory = Ray admission control)",
         ]
         for t in self.tiers:
             if not t.keys:
@@ -75,22 +53,15 @@ class Plan:
                 continue
             lines.append(
                 f"[{t.name}] items={len(t.keys)} max={human(t.max_bytes)} "
-                f"n_jobs={t.n_jobs} mem={t.mem_gb}g n_shards={t.n_shards}"
+                f"mem={t.mem_gb}g n_shards={t.n_shards}"
             )
         return "\n".join(lines)
 
 
-def safe_njobs(max_bytes: int, budget_bytes: float, expansion: float, cores: int) -> int:
-    if max_bytes <= 0:
-        return cores
-    n = math.floor(budget_bytes / (expansion * max_bytes))
-    return max(1, min(cores, n))
-
-
 def _snake_shards(keys: list[str], n_shards: int) -> list[list[str]]:
-    """Distribute size-sorted keys across shards in a boustrophedon (snake)
-    order so each shard gets a balanced mix of large and small -- not the
-    largest all in one shard."""
+    """Distribute size-sorted keys across shards in a boustrophedon (snake) order so
+    each shard gets a balanced mix of large and small -- not the largest all in one
+    shard."""
     buckets: list[list[str]] = [[] for _ in range(n_shards)]
     for i, k in enumerate(keys):
         row = i // n_shards
@@ -104,55 +75,22 @@ def plan(
     node: NodeSpec = NodeSpec(),
     expansion: float = 100.0,
 ) -> Plan:
-    """Partition ``sizes`` into small/medium/giant tiers with per-tier resources.
+    """Split items into <= ``n_nodes`` snake-balanced shards, one full-node lane.
 
-    * small  -- fits at full ``cores`` -> n_jobs=cores.
-    * giant  -- forces n_jobs below ``giant_njobs_ceiling`` -> its own low-mem lane.
-    * medium -- everything between.
-
-    Tiers still set each shard's ``--mem`` and the cross-node shard count; the
-    ``n_jobs`` they derive is advisory under the Ray fan-out.
+    One tier ("all"): each shard is a SLURM job pinned to a whole node running Ray;
+    the planner sets the node count and balances heavy items across shards, and Ray
+    owns memory within each node. ``expansion`` is recorded, not used to size.
     """
-    budget = node.budget_bytes
-    if budget <= 0:
-        msg = "memory budget <= 0: check node.base_gb / node.mem_gb"
-        raise ValueError(msg)
-    E = expansion
-    cores = node.cores
-
-    small_max = budget / (E * cores)                        # <= -> full cores
-    giant_min = budget / (E * node.giant_njobs_ceiling)     # >  -> giant lane
-
-    small: list[ItemSize] = []
-    medium: list[ItemSize] = []
-    giant: list[ItemSize] = []
-    for it in sizes:
-        if it.value_bytes <= small_max:
-            small.append(it)
-        elif it.value_bytes >= giant_min:
-            giant.append(it)
-        else:
-            medium.append(it)
-
-    def _tier(name: str, items: list[ItemSize]) -> Tier:
-        if not items:
-            return Tier(name, (), 0, 0, 0, 0)
-        items = sorted(items, key=lambda s: s.value_bytes, reverse=True)
-        tmax = items[0].value_bytes
-        njobs = safe_njobs(tmax, budget, E, cores)
-        mem_gb = min(int(node.mem_gb), math.ceil(node.base_gb + njobs * E * tmax / GB))
-        n_shards = min(node.n_nodes, len(items))
-        keys = tuple(k for shard in _snake_shards([i.key for i in items], n_shards) for k in shard)
-        # keys kept flat here; the driver re-shards via _snake_shards when it
-        # materializes per-shard key-lists. Store max/njobs so the driver can.
-        return Tier(name, keys, njobs, mem_gb, n_shards, tmax)
-
-    tiers = (
-        _tier("small", small),
-        _tier("medium", medium),
-        _tier("giant", giant),
+    items = sorted(sizes, key=lambda s: s.value_bytes, reverse=True)
+    if not items:
+        return Plan((Tier("all", (), node.cores, int(node.mem_gb), 0, 0),), node, expansion)
+    tmax = items[0].value_bytes
+    n_shards = min(node.n_nodes, len(items))
+    keys = tuple(
+        k for shard in _snake_shards([i.key for i in items], n_shards) for k in shard
     )
-    return Plan(tiers=tiers, node=node, expansion=E)
+    tier = Tier("all", keys, node.cores, int(node.mem_gb), n_shards, tmax)
+    return Plan((tier,), node, expansion)
 
 
 def shard_keys(tier: Tier) -> list[list[str]]:
