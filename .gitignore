@@ -7,3 +7,6 @@ __pycache__/
 test.py
 *.cif
 site/
+codex.md
+V2_REFACTOR_SUMMARY.md
+V3_REFACTOR_LOG.md
