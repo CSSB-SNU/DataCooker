@@ -351,9 +351,14 @@ def index_command(db_path, schema, key_convention, codec, source, recipe, expans
 @click.option("--depends-on", "depends_on", default="",
               help="comma-separated upstream job ids the tier arrays afterok-wait "
                    "on (multi-DB chaining: this DB starts after upstream DBs finish)")
+@click.option("--condition", "condition", default=None,
+              help="dotted path to a predicate fn(config)->bool; the pipeline runs only "
+                   "if it returns True (else no-op). Overrides the config's `condition:`. "
+                   "e.g. datacooker.conditions.output_absent for idempotent re-runs.")
 @click.option("--dry-run", is_flag=True, help="plan + write scripts, do not sbatch")
 def pipeline_command(engine_config, workdir, expansion, include_keys, schema,
-                     node_mem_gb, cores, n_nodes, repo, depends_on, dry_run) -> None:
+                     node_mem_gb, cores, n_nodes, repo, depends_on,
+                     condition, dry_run) -> None:
     """Planning-first build/rebuild: size the items, plan size tiers, submit tier
     arrays + merge + index -- all chained. Op is inferred from the engine config
     (old_env_path => rebuild; env_path + file_list/data_dir => build)."""
@@ -366,6 +371,20 @@ def pipeline_command(engine_config, workdir, expansion, include_keys, schema,
     coerce_path(raw, "old_env_path")
     coerce_path(raw, "new_env_path")
     coerce_path(raw, "env_path")
+
+    # Native conditional: a declarative `if` for the pipeline. The condition is a
+    # dotted-path predicate fn(config)->bool (like a recipe/hook reference); the whole
+    # pipeline runs only if it returns True, else it no-ops. Evaluated BEFORE the source
+    # scan/index read, so a skipped node costs nothing -- this is what makes a repeated
+    # `build-all` do only the missing work. `--condition` overrides the config's key.
+    cond_ref = condition or raw.get("condition")
+    if cond_ref is not None:
+        predicate = resolve_object(str(cond_ref))
+        if not predicate(raw):
+            target_early = raw.get("new_env_path") or raw.get("env_path")
+            click.echo(f"[pipeline] condition {cond_ref} -> skip ({target_early})")
+            click.echo("PIPELINE_TERMINAL_JOB=")
+            return
 
     if raw.get("old_env_path") is not None:            # ---- rebuild ----
         op, source, target = "rebuild", raw["old_env_path"], raw["new_env_path"]
