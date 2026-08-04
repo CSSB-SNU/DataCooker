@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from datacooker._parallel import iter_parallel_chunks, run_serial_test
 from datacooker.api import parse_file
@@ -140,11 +140,14 @@ _GC_ENABLED_PIDS: set[int] = set()
 
 
 def _ensure_worker_gc() -> None:
-    """Re-enable cyclic GC once per forked worker: the parent disables it before
-    the fork (to keep the inherited state copy-on-write), but a worker that keeps
-    GC off never collects the circular references in its per-task objects, so its
-    RssAnon climbs unbounded -> node OOM. Frozen parent objects are in the
-    permanent generation (unscanned), so COW is preserved."""
+    """Re-enable cyclic GC once per forked worker.
+
+    The parent disables it before the fork (to keep the inherited state
+    copy-on-write), but a worker that keeps GC off never collects the circular
+    references in its per-task objects, so its RssAnon climbs unbounded -> node
+    OOM. Frozen parent objects are in the permanent generation (unscanned), so
+    COW is preserved.
+    """
     pid = os.getpid()
     if pid not in _GC_ENABLED_PIDS:
         gc.enable()
@@ -177,7 +180,7 @@ def _build_worker(data_file: Any) -> tuple[bytes, bytes, Exception | None]:
 # The source LMDB handle is NOT inherited across fork (its fds/locks are unsafe
 # to share); each worker lazily reopens its own read-only handle in _REBUILD_ENV.
 _REBUILD_STATE: dict[str, Any] = {}
-_REBUILD_ENV: dict[str, Any] = {}
+_REBUILD_ENV: dict[int, Any] = {}
 
 
 def install_build_state(state: Mapping[str, Any]) -> None:
@@ -817,13 +820,17 @@ def merge_lmdb_shards(
                         f"Duplicate LMDB key '{k.decode()}' encountered while "
                         f"merging shards into '{merged_env_path}'."
                     )
-                    raise KeyError(msg)
+                    raise KeyError(msg)  # noqa: TRY301  # in-loop guard; abstracting would restructure the merge
                 if on_duplicate == "union":
+                    # Both serializers are non-None here: validated at entry when
+                    # on_duplicate == "union". cast is runtime-invisible.
+                    serialize = cast("Callable[[dict], bytes]", value_serializer)
+                    deserialize = cast("Callable[[bytes], dict]", value_deserializer)
                     existing = merged_txn.get(k)
                     if existing is not None:
-                        v = value_serializer({
-                            **value_deserializer(bytes(existing)),
-                            **value_deserializer(v),
+                        v = serialize({
+                            **deserialize(bytes(existing)),
+                            **deserialize(v),
                         })
                 merged_txn.put(k, v)  # append=False: overwrite the just-written key
             else:

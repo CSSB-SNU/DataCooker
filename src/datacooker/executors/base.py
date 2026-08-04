@@ -1,15 +1,18 @@
 """Executor protocol shared by the local and SLURM backends."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True, slots=True)
 class TaskHandle:
-    """A submitted (or would-be) unit of work. ``job_id`` is the backend's handle
-    used to chain dependants (SLURM job id); ``None`` for a synchronous local run
-    or a dry run."""
+    """A submitted (or would-be) unit of work.
+
+    ``job_id`` is the backend's handle used to chain dependants (SLURM job id);
+    ``None`` for a synchronous local run or a dry run.
+    """
 
     name: str
     job_id: str | None = None
@@ -18,14 +21,17 @@ class TaskHandle:
 
 @runtime_checkable
 class Executor(Protocol):
-    """Runs the pipeline's stages. All methods return a TaskHandle whose
-    ``job_id`` later stages depend on (``afterok`` semantics)."""
+    """Run the pipeline's stages.
+
+    All methods return a TaskHandle whose ``job_id`` later stages depend on
+    (``afterok`` semantics).
+    """
 
     def run_tier_shards(
         self,
         *,
         name: str,
-        argv_for_shard,           # (shard_idx) -> list[str] engine command
+        argv_for_shard: Callable[[int], list[str]],  # (shard_idx) -> engine command
         n_shards: int,
         mem_gb: int,
         cores: int,

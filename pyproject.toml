@@ -59,16 +59,15 @@ ignore = [
     "F722", # Incompatible with jaxtyping
     "D100", # Missing docstring in public module
     "D104", # Missing docstring in public package
-    "C901",
+    "C901", "PLR0911", "PLR0912", "PLR0915",  # complexity: pipelines are wide
+    "PLR2004",  # magic values read fine in numeric/scientific code
     "COM812", # Formatter-compatible trailing comma handling
     "N806",
     "E501",
     "ANN401", # Public API accepts arbitrary workflow payloads
-    "FBT001", # Compatibility wrappers expose simple boolean flags
-    "FBT002",
+    "FBT001", "FBT002", "FBT003",  # Compatibility wrappers expose boolean flags
     "PLR0913", # Public compatibility APIs are intentionally wide
-    "TC001", # Postponed evaluation makes runtime imports acceptable here
-    "TC003",
+    "TC001", "TC002", "TC003",  # Postponed evaluation makes runtime imports fine
 ]
 
 [tool.ruff.lint.pydocstyle]

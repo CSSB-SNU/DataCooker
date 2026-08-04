@@ -18,6 +18,8 @@ from datacooker.lmdb.index import ItemSize, human
 
 @dataclass(frozen=True, slots=True)
 class NodeSpec:
+    """Whole-node resource profile a single shard is pinned to."""
+
     mem_gb: float = 490.0
     cores: int = 112
     n_nodes: int = 8
@@ -25,6 +27,8 @@ class NodeSpec:
 
 @dataclass(frozen=True, slots=True)
 class Tier:
+    """One size lane of items to be split across snake-balanced shards."""
+
     name: str
     keys: tuple[str, ...]
     n_jobs: int          # advisory under Ray (it sizes to node CPUs)
@@ -35,14 +39,18 @@ class Tier:
 
 @dataclass(frozen=True, slots=True)
 class Plan:
+    """Full fan-out plan: the tiers to submit plus the node profile and stats."""
+
     tiers: tuple[Tier, ...]
     node: NodeSpec
     expansion: float
 
     def nonempty(self) -> list[Tier]:
+        """Return the tiers that actually have items to build."""
         return [t for t in self.tiers if t.keys]
 
     def describe(self) -> str:
+        """Render a one-line-per-tier human summary of the plan."""
         lines = [
             f"ray fan-out: cores={self.node.cores} nodes<={self.node.n_nodes} "
             f"(within-node memory = Ray admission control)",
@@ -59,9 +67,11 @@ class Plan:
 
 
 def _snake_shards(keys: list[str], n_shards: int) -> list[list[str]]:
-    """Distribute size-sorted keys across shards in a boustrophedon (snake) order so
-    each shard gets a balanced mix of large and small -- not the largest all in one
-    shard."""
+    """Distribute size-sorted keys across shards in boustrophedon (snake) order.
+
+    Each shard gets a balanced mix of large and small keys -- not the largest all
+    in one shard.
+    """
     buckets: list[list[str]] = [[] for _ in range(n_shards)]
     for i, k in enumerate(keys):
         row = i // n_shards
@@ -70,9 +80,12 @@ def _snake_shards(keys: list[str], n_shards: int) -> list[list[str]]:
     return buckets
 
 
+_DEFAULT_NODE = NodeSpec()
+
+
 def plan(
     sizes: list[ItemSize],
-    node: NodeSpec = NodeSpec(),
+    node: NodeSpec = _DEFAULT_NODE,
     expansion: float = 100.0,
 ) -> Plan:
     """Split items into <= ``n_nodes`` snake-balanced shards, one full-node lane.

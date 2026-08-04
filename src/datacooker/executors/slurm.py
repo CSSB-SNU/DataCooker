@@ -9,15 +9,17 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from datacooker.executors.base import TaskHandle
 
 
 @dataclass
 class SlurmExecutor:
+    """Submit each tier as a SLURM job array, chaining merge + index via afterok."""
+
     workdir: Path                       # scratch for manifests, scripts, logs
     repo: Path                          # cwd + pixi manifest root
     # cpu-long-q is the only uncapped cpu QOS (GrpTRES node=0 = unlimited);
@@ -31,6 +33,7 @@ class SlurmExecutor:
     _dry_seq: int = 0
 
     def __post_init__(self) -> None:
+        """Normalise paths and create the workdir/log directories."""
         self.workdir = Path(self.workdir)
         self.repo = Path(self.repo)
         self.workdir.mkdir(parents=True, exist_ok=True)
@@ -41,9 +44,10 @@ class SlurmExecutor:
             self.pixi_manifest = self.repo / "pyproject.toml"
 
     # ---- public API -------------------------------------------------------
-    def run_tier_shards(self, *, name, argv_for_shard: Callable[[int], list[str]],
+    def run_tier_shards(self, *, name: str, argv_for_shard: Callable[[int], list[str]],
                         n_shards: int, mem_gb: int, cores: int,
                         depends_on: tuple[str, ...] = ()) -> TaskHandle:
+        """Submit one size tier's shards as a single SLURM job array."""
         manifest = self.workdir / f"{name}.cmds"
         with manifest.open("w", encoding="utf-8") as f:
             for i in range(n_shards):
@@ -53,8 +57,9 @@ class SlurmExecutor:
                               array=f"0-{n_shards - 1}")
         return TaskHandle(name, job_id, depends_on)
 
-    def run_once(self, *, name, argv: list[str], mem_gb: int, cores: int,
+    def run_once(self, *, name: str, argv: list[str], mem_gb: int, cores: int,
                  depends_on: tuple[str, ...] = ()) -> TaskHandle:
+        """Submit a single command (merge, index) after its dependencies."""
         manifest = self.workdir / f"{name}.cmds"
         manifest.write_text(" ".join(shlex.quote(a) for a in argv) + "\n", encoding="utf-8")
         script = self._write_script(name, manifest, array=False)
@@ -76,9 +81,9 @@ class SlurmExecutor:
             "set -euo pipefail\n"
             f"cd {shlex.quote(str(self.repo))}\n"
             'export PYTHONPATH="."\n'
-            f"CMD=$(sed -n \"{line}p\" {shlex.quote(str(manifest))})\n"
+            f'CMD=$(sed -n "{line}p" {shlex.quote(str(manifest))})\n'
             'echo "host=$(hostname) task=${SLURM_ARRAY_TASK_ID:-0} start=$(date)"\n'
-            f"pixi run --manifest-path {shlex.quote(str(self.pixi_manifest))} bash -c \"$CMD\"\n"
+            f'pixi run --manifest-path {shlex.quote(str(self.pixi_manifest))} bash -c "$CMD"\n'
             'echo "end=$(date)"\n',
             encoding="utf-8",
         )
@@ -96,12 +101,12 @@ class SlurmExecutor:
         if not self.submit:
             self._dry_seq += 1
             fake = f"DRY{self._dry_seq}"
-            print(f"[dry-run] {name}: {' '.join(cmd)}  -> {fake}"
+            print(f"[dry-run] {name}: {' '.join(cmd)}  -> {fake}"  # noqa: T201
                   + (f"  (afterok {dep})" if dep else ""))
             return fake
         out = subprocess.run(cmd, capture_output=True, text=True, check=True)  # noqa: S603
         job_id = out.stdout.strip().split(";")[0]
-        print(f"[slurm] {name}: job {job_id}"
+        print(f"[slurm] {name}: job {job_id}"  # noqa: T201
               + (f" afterok {dep}" if dep else "")
               + (f" array {array}" if array else ""))
         return job_id

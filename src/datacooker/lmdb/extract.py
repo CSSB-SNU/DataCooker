@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import signal
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
@@ -18,21 +19,24 @@ from datacooker.readers import ReaderHooks, decode_payload, resolve_key_transfor
 logger = logging.getLogger(__name__)
 
 
-class _RecordTimeout(Exception):
+class _RecordTimeout(Exception):  # noqa: N818  # historical public-ish name; renaming would alter the returned error's class identity
     """One record exceeded its per-record extract budget."""
 
 
-def _alarm(signum: int, frame: Any) -> None:  # noqa: ANN401, ARG001
+def _alarm(signum: int, frame: Any) -> None:  # noqa: ARG001
     raise _RecordTimeout
 
 
-def _with_record_timeout(seconds: float | None):
-    """Per-record watchdog: SIGALRM interrupts the (pure-Python) recipe loop so a
-    pathological entry (e.g. a mega-assembly with a huge contact graph -> minutes
-    in the interface loop) is SKIPPED via the caller's ``except``, not left to hang
-    the whole extract. Unlike joblib's ``timeout`` it does not abort the run; unlike
-    a C-level hang it works only because ``extract_edge_node`` is Python-loop bound.
-    Worker/main-thread only (loky workers qualify); a no-op when seconds is falsy."""
+def _with_record_timeout(seconds: float | None) -> AbstractContextManager[None]:
+    """Per-record watchdog interrupting the recipe loop via SIGALRM.
+
+    SIGALRM interrupts the (pure-Python) recipe loop so a pathological entry
+    (e.g. a mega-assembly with a huge contact graph -> minutes in the interface
+    loop) is SKIPPED via the caller's ``except``, not left to hang the whole
+    extract. Unlike joblib's ``timeout`` it does not abort the run; unlike a
+    C-level hang it works only because ``extract_edge_node`` is Python-loop bound.
+    Worker/main-thread only (loky workers qualify); a no-op when seconds is falsy.
+    """
     class _Guard:
         def __enter__(self) -> None:
             if seconds:
@@ -126,7 +130,7 @@ def extract_lmdb_records(
                     **extra_kwargs,
                 )
         except _RecordTimeout:
-            logger.error("Timeout extracting %s (> %ss) -- skipped", key, task_timeout)
+            logger.error("Timeout extracting %s (> %ss) -- skipped", key, task_timeout)  # noqa: TRY400  # deliberate: skip is expected, no traceback wanted
             return key, {}, _RecordTimeout(f"{key} exceeded {task_timeout}s")
         except Exception as error:  # noqa: BLE001
             return key, {}, error

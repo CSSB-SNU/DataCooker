@@ -21,20 +21,24 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import ModuleType
 
 INDEX_SUFFIX = ".index.tsv"
 META_SUFFIX = ".meta.json"
 
 
 def index_path(db_path: str | Path) -> Path:
+    """Return the ``<db>.index.tsv`` sidecar path for a DB."""
     return Path(str(db_path) + INDEX_SUFFIX)
 
 
 def meta_path(db_path: str | Path) -> Path:
+    """Return the ``<db>.meta.json`` sidecar path for a DB."""
     return Path(str(db_path) + META_SUFFIX)
 
 
 def human(n: float) -> str:
+    """Format a byte count as a human-readable IEC size string."""
     for unit in ("B", "K", "M", "G", "T"):
         if abs(n) < 1024.0:
             return f"{n:.1f}{unit}"
@@ -44,12 +48,16 @@ def human(n: float) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ItemSize:
+    """One key and its stored value size in bytes."""
+
     key: str
     value_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
 class IndexStats:
+    """Summary statistics over a DB's per-item value sizes."""
+
     entries: int
     total_bytes: int
     max_bytes: int
@@ -75,7 +83,7 @@ class DbMeta:
     extra: dict = field(default_factory=dict)
 
 
-def _require_lmdb():
+def _require_lmdb() -> ModuleType:
     try:
         import lmdb
     except ImportError as exc:  # pragma: no cover
@@ -115,8 +123,10 @@ def _stats(sizes: list[ItemSize]) -> IndexStats:
 
 
 def write_index(db_path: str | Path, sizes: list[ItemSize] | None = None) -> IndexStats:
-    """Write ``<db>.index.tsv`` (largest first, with stats header). Scans the DB
-    if ``sizes`` is not supplied. Returns the summary stats."""
+    """Write ``<db>.index.tsv`` (largest first, with stats header).
+
+    Scans the DB if ``sizes`` is not supplied. Returns the summary stats.
+    """
     if sizes is None:
         sizes = scan_sizes(db_path)
     ordered = sorted(sizes, key=lambda s: s.value_bytes, reverse=True)
@@ -144,7 +154,7 @@ def read_index(db_path: str | Path) -> list[ItemSize]:
     out: list[ItemSize] = []
     with p.open(encoding="utf-8") as f:
         for line in f:
-            if line.startswith("#") or line.startswith("key\t"):
+            if line.startswith(("#", "key\t")):
                 continue
             parts = line.rstrip("\n").split("\t")
             if len(parts) >= 2:
@@ -156,6 +166,7 @@ def read_index(db_path: str | Path) -> list[ItemSize]:
 
 
 def has_index(db_path: str | Path) -> bool:
+    """Return whether the ``<db>.index.tsv`` sidecar exists."""
     return index_path(db_path).exists()
 
 
@@ -167,6 +178,7 @@ def write_meta(db_path: str | Path, meta: DbMeta) -> Path:
 
 
 def read_meta(db_path: str | Path) -> DbMeta | None:
+    """Read ``<db>.meta.json`` into a :class:`DbMeta`, or ``None`` if absent."""
     p = meta_path(db_path)
     if not p.exists():
         return None

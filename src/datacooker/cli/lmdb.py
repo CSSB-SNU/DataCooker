@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import click
 
@@ -23,6 +23,9 @@ from datacooker.readers import ReaderHooks
 from datacooker.utils.importing import resolve_object
 from datacooker.utils.sharding import shard_items_by_key
 from datacooker.writers import WriterHooks
+
+if TYPE_CHECKING:
+    from datacooker.lmdb.core import DuplicatePolicy
 
 
 @click.group()
@@ -72,6 +75,8 @@ def build_command(
     # an explicit --file-list overrides it (e.g. a planner size tier).
     config_file_list = pop_config_value(config, "file_list", default=None)
     file_list = file_list_override or config_file_list
+    data_dir: Path | None = None
+    file_pattern = "*"
     if file_list is None:
         data_dir = Path(pop_config_value(config, "data_dir"))
         file_pattern = str(pop_config_value(config, "file_pattern", default="*"))
@@ -88,7 +93,7 @@ def build_command(
         with Path(file_list).open() as handle:
             data_list = [Path(line.strip()) for line in handle if line.strip()]
     else:
-        data_list = scan_paths(data_dir, pattern=file_pattern)
+        data_list = scan_paths(cast("Path", data_dir), pattern=file_pattern)
     if shard_idx is not None:
         if shard_idx < 0 or shard_idx >= n_shards:
             msg = f"Invalid shard index {shard_idx} for {n_shards} shards."
@@ -298,7 +303,7 @@ def merge_command(
         output,
         map_size=map_size,
         overwrite=overwrite,
-        on_duplicate=on_duplicate,
+        on_duplicate=cast("DuplicatePolicy", on_duplicate),
         value_deserializer=deserializer,
         value_serializer=serializer,
     )
@@ -321,9 +326,19 @@ def count_command(env_path: Path) -> None:
 @click.option("--source", default=None, help="lineage: DB this was built from")
 @click.option("--recipe", "recipe", default=None)
 @click.option("--expansion", type=float, default=None, help="measured E for the planner")
-def index_command(db_path, schema, key_convention, codec, source, recipe, expansion) -> None:
-    """Write a DB's per-item size sidecar + metadata descriptor (mandatory
-    post-step of every build)."""
+def index_command(
+    db_path: Path,
+    schema: str,
+    key_convention: str,
+    codec: str,
+    source: str | None,
+    recipe: str | None,
+    expansion: float | None,
+) -> None:
+    """Write a DB's per-item size sidecar + metadata descriptor.
+
+    Mandatory post-step of every build.
+    """
     from datacooker.lmdb.index import DbMeta, write_index, write_meta
 
     stats = write_index(db_path)
@@ -351,17 +366,26 @@ def index_command(db_path, schema, key_convention, codec, source, recipe, expans
 @click.option("--depends-on", "depends_on", default="",
               help="comma-separated upstream job ids the tier arrays afterok-wait "
                    "on (multi-DB chaining: this DB starts after upstream DBs finish)")
-@click.option("--condition", "condition", default=None,
-              help="dotted path to a predicate fn(config)->bool; the pipeline runs only "
-                   "if it returns True (else no-op). Overrides the config's `condition:`. "
-                   "e.g. datacooker.conditions.output_absent for idempotent re-runs.")
 @click.option("--dry-run", is_flag=True, help="plan + write scripts, do not sbatch")
-def pipeline_command(engine_config, workdir, expansion, include_keys, schema,
-                     node_mem_gb, cores, n_nodes, repo, depends_on,
-                     condition, dry_run) -> None:
-    """Planning-first build/rebuild: size the items, plan size tiers, submit tier
-    arrays + merge + index -- all chained. Op is inferred from the engine config
-    (old_env_path => rebuild; env_path + file_list/data_dir => build)."""
+def pipeline_command(
+    engine_config: Path,
+    workdir: Path,
+    expansion: float,
+    include_keys: Path | None,
+    schema: str,
+    node_mem_gb: float,
+    cores: int,
+    n_nodes: int,
+    repo: Path | None,
+    depends_on: str,
+    dry_run: bool,
+) -> None:
+    """Plan a build/rebuild and submit chained tier arrays + merge + index.
+
+    Size the items, plan size tiers, submit tier arrays + merge + index -- all
+    chained. Op is inferred from the engine config (old_env_path => rebuild;
+    env_path + file_list/data_dir => build).
+    """
     from datacooker.executors.slurm import SlurmExecutor
     from datacooker.lmdb.index import ItemSize, read_index, write_index
     from datacooker.pipeline import PipelineConfig, run
@@ -371,20 +395,6 @@ def pipeline_command(engine_config, workdir, expansion, include_keys, schema,
     coerce_path(raw, "old_env_path")
     coerce_path(raw, "new_env_path")
     coerce_path(raw, "env_path")
-
-    # Native conditional: a declarative `if` for the pipeline. The condition is a
-    # dotted-path predicate fn(config)->bool (like a recipe/hook reference); the whole
-    # pipeline runs only if it returns True, else it no-ops. Evaluated BEFORE the source
-    # scan/index read, so a skipped node costs nothing -- this is what makes a repeated
-    # `build-all` do only the missing work. `--condition` overrides the config's key.
-    cond_ref = condition or raw.get("condition")
-    if cond_ref is not None:
-        predicate = resolve_object(str(cond_ref))
-        if not predicate(raw):
-            target_early = raw.get("new_env_path") or raw.get("env_path")
-            click.echo(f"[pipeline] condition {cond_ref} -> skip ({target_early})")
-            click.echo("PIPELINE_TERMINAL_JOB=")
-            return
 
     if raw.get("old_env_path") is not None:            # ---- rebuild ----
         op, source, target = "rebuild", raw["old_env_path"], raw["new_env_path"]

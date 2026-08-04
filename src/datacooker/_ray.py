@@ -80,7 +80,7 @@ def _run_batch(
     """
     worker = _resolve(worker_qualname)
     module_name = worker_qualname.rsplit(".", 1)[0]
-    module = import_module(module_name)
+    module: Any = import_module(module_name)
     if not getattr(module, "_RAY_STATE_INSTALLED", False):
         _resolve(installer_qualname)(state)
         module._RAY_STATE_INSTALLED = True  # noqa: SLF001

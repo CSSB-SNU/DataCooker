@@ -22,7 +22,7 @@ from pathlib import Path
 
 from datacooker.executors.base import Executor, TaskHandle
 from datacooker.lmdb.index import ItemSize
-from datacooker.planning import NodeSpec, plan, shard_keys
+from datacooker.planning import NodeSpec, Tier, plan, shard_keys
 
 CLI = ["python", "-u", "-m", "datacooker.cli.lmdb"]
 
@@ -32,6 +32,8 @@ LIST_FLAG = {"rebuild": "--key-list", "build": "--file-list"}
 
 @dataclass
 class PipelineConfig:
+    """Declarative inputs for one planning-first LMDB build/rebuild pipeline."""
+
     op: str                                  # "rebuild" | "build"
     target: Path                             # output LMDB
     engine_config: Path                      # datacooker yaml: recipe/adapter/params/...
@@ -43,6 +45,7 @@ class PipelineConfig:
     merge_on_duplicate: str = "overwrite"
 
     def __post_init__(self) -> None:
+        """Normalise paths and validate ``op``."""
         self.target = Path(self.target)
         self.engine_config = Path(self.engine_config)
         if self.source is not None:
@@ -55,7 +58,7 @@ class PipelineConfig:
     def base(self) -> str:
         """Target path without ``.lmdb`` -- tier-shard outputs hang off this."""
         s = str(self.target)
-        return s[:-5] if s.endswith(".lmdb") else s
+        return s.removesuffix(".lmdb")
 
 
 def run(
@@ -79,9 +82,9 @@ def run(
     keyfiles_dir.mkdir(parents=True, exist_ok=True)
     list_flag = LIST_FLAG[cfg.op]
 
-    print(f"[pipeline] {cfg.op}: planning {len(sizes)} items -> {cfg.target.name}")
+    print(f"[pipeline] {cfg.op}: planning {len(sizes)} items -> {cfg.target.name}")  # noqa: T201
     p = plan(sizes, cfg.node, cfg.expansion)
-    print(p.describe())
+    print(p.describe())  # noqa: T201
 
     # one array per tier
     tier_handles: list[TaskHandle] = []
@@ -91,7 +94,7 @@ def run(
             (keyfiles_dir / f"items_{tier.name}_shard{i}.txt").write_text(
                 "\n".join(ids) + "\n", encoding="utf-8")
 
-        def argv_for_shard(i: int, tier=tier) -> list[str]:
+        def argv_for_shard(i: int, tier: Tier = tier) -> list[str]:
             lst = keyfiles_dir / f"items_{tier.name}_shard{i}.txt"
             out = f"{cfg.base}_{tier.name}_shard{i}.lmdb"
             argv = [*CLI, cfg.op, str(cfg.engine_config),

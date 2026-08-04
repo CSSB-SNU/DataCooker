@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .api import describe, execute, parse, parse_dict, parse_file, rebuild, visualize
+from .api import describe, execute, parse_dict, parse_file, visualize
 from .executor import Cooker
 from .lmdb import (
     build_lmdb,
@@ -48,13 +48,11 @@ __all__ = [
     "load_recipe",
     "merge_lmdb_shards",
     "parallel_process",
-    "parse",
     "parse_dict",
     "parse_file",
     "read_all_lmdb_raw",
     "read_lmdb",
     "read_lmdb_raw",
-    "rebuild",
     "rebuild_lmdb",
     "resolve_node_config",
     "resolve_object",

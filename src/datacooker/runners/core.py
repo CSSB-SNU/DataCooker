@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from datacooker.api import execute, parse_dict
 from datacooker.lmdb import extract_lmdb_records
@@ -65,7 +65,7 @@ def run_recipe_batch(
     return parallel_process_report(
         data_list,
         inputs=inputs,
-        recipe=Path(recipe) if isinstance(recipe, str) else recipe,
+        recipe=cast("Path", Path(recipe) if isinstance(recipe, str) else recipe),
         key_transform=None if reader is None else reader.key_transform,
         chunk_size=chunk_size,
         n_jobs=n_jobs,
@@ -100,7 +100,7 @@ def run_lmdb_extract(
         raise ValueError(msg)
     results = extract_lmdb_records(
         env_path,
-        Path(recipe) if isinstance(recipe, str) else recipe,
+        cast("Path", Path(recipe) if isinstance(recipe, str) else recipe),
         reader=reader,
         inputs=inputs,
         metadata_recipe=metadata_recipe,

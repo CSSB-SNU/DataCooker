@@ -13,8 +13,8 @@ requires numpy at runtime.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
-from typing import TYPE_CHECKING, TypeVar
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -74,7 +74,7 @@ def merge_dict(
     for _dict in args:
         if _dict is None:
             continue
-        for row1, inner_dict in _dict.items():
+        for row1, inner_dict in cast("Mapping[Any, Mapping[Any, Any]]", _dict).items():
             if row1 not in _merged_dict:
                 _merged_dict[row1] = {}
             for col, values in inner_dict.items():
