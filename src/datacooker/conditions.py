@@ -18,10 +18,15 @@ from typing import Any
 def output_absent(config: dict[str, Any]) -> bool:
     """Return True if this DB's output is not built yet (so it still needs building).
 
-    The pipeline's final stage writes ``<target>.index.tsv``, so its presence means the
-    DB is fully built; returning False then lets the caller skip it. This is the predicate
-    that makes a repeated ``build-all`` do only the missing work (idempotent re-run).
+    For an LMDB build/rebuild the final stage writes ``<target>.index.tsv``, so its
+    presence means the DB is fully built. For a projection op (materialize/extract) the
+    output is a plain file at ``output_data_path``, so its own presence is the signal.
+    Returning False lets the caller skip it -- this is what makes a repeated ``build-all``
+    do only the missing work (idempotent re-run).
     """
+    projection = config.get("output_data_path")
+    if projection:
+        return not Path(projection).exists()
     target = config.get("new_env_path") or config.get("env_path")
     return not (target and Path(f"{target}.index.tsv").exists())
 
