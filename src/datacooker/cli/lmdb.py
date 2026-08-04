@@ -71,6 +71,9 @@ def build_command(
         config["chunk_size"] = chunk_size
     if skip_existing:
         config["skip_existing"] = True
+    # `keyed` is a planner-only hint (items are LMDB keys, not files); it never
+    # reaches build_lmdb.
+    pop_config_value(config, "keyed", default=None)
     # Always pop the config's file_list (avoid leaking it into build_lmdb kwargs);
     # an explicit --file-list overrides it (e.g. a planner size tier).
     config_file_list = pop_config_value(config, "file_list", default=None)
@@ -410,10 +413,18 @@ def pipeline_command(
         op, source, target = "build", None, raw["env_path"]
         file_list = raw.get("file_list")
         if file_list is not None:
-            files = [Path(ln.strip()) for ln in Path(file_list).read_text().splitlines() if ln.strip()]
+            items = [ln.strip() for ln in Path(file_list).read_text().splitlines() if ln.strip()]
+            if raw.get("keyed"):
+                # Keyed build: file_list holds LMDB keys (seqids / chain-ids), not
+                # files on disk -- the recipe resolves each item by lookup, so there
+                # is no input st_size. Size uniformly and let the planner balance by
+                # count (template Phase 3/4). Closes the key-list sizing gap.
+                sizes = [ItemSize(k, 1) for k in items]
+            else:
+                sizes = [ItemSize(str(Path(k)), Path(k).stat().st_size) for k in items]
         else:
             files = list(scan_paths(Path(raw["data_dir"]), pattern=str(raw.get("file_pattern", "*"))))
-        sizes = [ItemSize(str(f), f.stat().st_size) for f in files]
+            sizes = [ItemSize(str(f), f.stat().st_size) for f in files]
     else:
         msg = "engine config needs old_env_path (rebuild) or env_path+file source (build)."
         raise click.ClickException(msg)
