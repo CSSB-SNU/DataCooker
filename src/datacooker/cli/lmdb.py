@@ -421,7 +421,8 @@ def pipeline_command(
                 # count (template Phase 3/4). Closes the key-list sizing gap.
                 sizes = [ItemSize(k, 1) for k in items]
             else:
-                sizes = [ItemSize(str(Path(k)), Path(k).stat().st_size) for k in items]
+                paths = [Path(k) for k in items]
+                sizes = [ItemSize(str(p), p.stat().st_size) for p in paths]
         else:
             files = list(scan_paths(Path(raw["data_dir"]), pattern=str(raw.get("file_pattern", "*"))))
             sizes = [ItemSize(str(f), f.stat().st_size) for f in files]
