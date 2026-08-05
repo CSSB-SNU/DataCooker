@@ -6,9 +6,34 @@ import logging
 from collections.abc import Iterator, Mapping, Sequence
 from functools import lru_cache
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_SERIAL_TEST_SAMPLE = 10
+
+
+def _smoke_sample(items: Sequence[Any], n: int) -> list[Any]:
+    """Pick <= ``n`` items to smoke-test serially before the parallel run.
+
+    For file-path items prefer the SMALLEST by size: planners sort a build's items
+    largest-first (bin-packing), so ``items[:n]`` would serially process the biggest
+    structures on a single core -- and the parallel run then reprocesses them -- which
+    for a DB like pdb/cif means grinding the 500 MB / high-expansion records twice. A
+    small file exercises the same recipe wiring far cheaper, so fail-fast keeps its
+    value at a fraction of the cost. Non-path items (e.g. rebuild LMDB keys, which have
+    no cheap size and aren't size-ordered) keep their original order.
+    """
+    if len(items) <= n:
+        return list(items)
+    try:
+        sized = [(Path(item).stat().st_size, idx) for idx, item in enumerate(items)]
+    except (OSError, TypeError, ValueError):
+        # A non-path item (e.g. an LMDB key) -- keep original order.
+        return list(items[:n])
+    smallest = sorted(sized)[:n]
+    return [items[idx] for _, idx in smallest]
 
 
 def require_joblib(*, feature_name: str) -> tuple[Any, Any]:
@@ -34,7 +59,7 @@ def run_serial_test(
     if not enabled or not items:
         return
 
-    for item in items[:10]:
+    for item in _smoke_sample(items, _SERIAL_TEST_SAMPLE):
         result = process_item(item)
         if result is None:
             continue
