@@ -29,12 +29,15 @@ Design
   copy-on-write.
 * Results are regrouped into ``chunk_size`` lists and yielded, so the caller's
   single-writer drain loop (``_parallel_write``) is byte-for-byte unchanged.
-* **Native Ray runtime policy.** We do not override Ray's temp dir or hand-manage
-  ``/dev/shm``: Ray already isolates each ``ray.init()`` in its own ``session_*``
-  dir (so concurrent SLURM shard tasks on one node don't collide) and cleans it on a
-  graceful ``ray.shutdown``. A SIGKILL leak is bounded (the plasma file is sized to
-  ``object_store_memory`` and named per-session, never colliding with a fresh run)
-  and left to ops (``ray stop`` / SLURM epilog) rather than library-side rmtree.
+* **Isolated, fresh-local Ray head.** Each ``ray.init()`` pins a unique per-process
+  ``_temp_dir`` and passes ``address="local"``, so a shard task always starts its own
+  private instance instead of auto-discovering one via the shared
+  ``<temp_dir>/ray_current_cluster`` address file. That file lives at the ``/tmp/ray``
+  root (not under the per-session dir), so a stale entry from a dead earlier run would
+  otherwise hijack a new init and hang it forever retrying an unreachable GCS. Plasma
+  still lives in ``/dev/shm`` per session; a SIGKILL leak is bounded (sized to
+  ``object_store_memory``, named per-session) and left to ops (``ray stop`` / SLURM
+  epilog) rather than a library-side rmtree.
 """
 from __future__ import annotations
 
@@ -118,14 +121,27 @@ def iter_ray_chunks(
     os.environ.setdefault("RAY_memory_usage_threshold", str(memory_threshold))
     started_here = not ray.is_initialized()
     if started_here:
-        # Native Ray policy: each ray.init() gets its own ``session_<ts>_<pid>``
-        # dir under the default temp root (plasma in /dev/shm), so concurrent SLURM
-        # tasks on one node never collide, and a graceful ``ray.shutdown`` removes
-        # our session. We do NOT override the temp dir or hand-clean /dev/shm --
-        # a SIGKILL leak is bounded (plasma is sized to object_store_memory and
-        # named per-session, so it never collides with a fresh run) and is an ops
-        # concern (``ray stop`` / epilog), not the library's.
+        # Force a FRESH, node-local Ray head -- never attach to a discovered one.
+        #
+        # ``ray.init()`` with no address auto-discovers an existing cluster via the
+        # address file ``<temp_dir>/ray_current_cluster``. Ray isolates each session's
+        # *plasma/logs* under ``session_<ts>_<pid>``, but that address file lives at the
+        # ``/tmp/ray`` ROOT and is shared across runs (and, on a shared node, across
+        # users). A stale file from an earlier run whose GCS is long dead then hijacks a
+        # new ``ray.init()``, which hangs forever retrying an unreachable GCS
+        # (``Failed to connect to GCS at <ip>:6379``) -- exactly what stranded SLURM
+        # shard tasks on nodes carrying a leftover file. Pin a unique per-process
+        # ``_temp_dir`` (so we never read someone else's address file) and pass
+        # ``address="local"`` (so we never attach to a discovered cluster or a leaked
+        # ``RAY_ADDRESS``); each shard task gets its own private, self-cleaning instance.
+        token = os.environ.get("SLURM_JOB_ID") or str(os.getpid())
+        temp_dir = os.path.join(  # noqa: PTH118
+            os.environ.get("TMPDIR", "/tmp"),  # noqa: S108
+            f"ray-{token}-{os.getpid()}",
+        )
         ray.init(
+            address="local",
+            _temp_dir=temp_dir,
             ignore_reinit_error=True,
             logging_level=logging.WARNING,
             include_dashboard=False,
