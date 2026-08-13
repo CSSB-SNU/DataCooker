@@ -17,6 +17,12 @@ schemas, CLI, shard-merge, single-writer drain) unchanged: only the within-node 
 changed. ``build_lmdb`` / ``rebuild_lmdb`` use this unconditionally -- there is no
 backend choice.
 
+Caveat: Ray's monitor is reactive (kill + retry), not an admission back-off -- it does
+not lower how much work is in flight. For most builds the default concurrency fits, but
+a memory-heavy step (e.g. schema-B attach) can exceed the threshold in steady state and
+oscillate rather than converge. The ``DATACOOKER_RAY_CPUS_PER_TASK`` / ``_BATCH`` /
+``_INFLIGHT`` env knobs cut the admitted key count for those cases (see below).
+
 Design
 ------
 * **Stateless batched tasks**, not actors. A task that the memory monitor kills is
@@ -148,15 +154,30 @@ def iter_ray_chunks(
         )
     resources = ray.cluster_resources()
     n_cpus = int(resources.get("CPU", os.cpu_count() or 8))
-    n_workers = n_actors or n_cpus
+    # Dial the ADMITTED concurrency down for memory-heavy steps (e.g. schema-B attach).
+    # Ray's memory monitor only kills+retries after a task already blew the threshold --
+    # it never lowers how much work is admitted -- so when the steady-state footprint of
+    # ``workers x inflight x batch`` keys exceeds memory, it oscillates (kill -> respawn ->
+    # OOM -> kill) instead of converging, and the repeated killing can take GCS down with
+    # it. These env knobs (defaults preserve prior behaviour) let a caller cut the
+    # in-flight key count so it fits: fewer keys per task, fewer tasks in flight, and/or
+    # more CPUs per task (Ray's own recommended lever -- reserving k CPUs runs n_cpus/k
+    # tasks at once).
+    cpus_per_task = max(1, int(os.environ.get("DATACOOKER_RAY_CPUS_PER_TASK", "1")))
+    batch = max(1, int(os.environ.get("DATACOOKER_RAY_BATCH", str(batch))))
+    inflight_per_worker = max(
+        1, int(os.environ.get("DATACOOKER_RAY_INFLIGHT", str(inflight_per_worker))),
+    )
+    n_workers = n_actors or max(1, n_cpus // cpus_per_task)
     total = len(items)
     logger.info(
-        "%s via ray: cpus=%d workers=%d batch=%d keys=%d thresh=%.2f",
-        log_label, n_cpus, n_workers, batch, total, memory_threshold,
+        "%s via ray: cpus=%d cpus/task=%d workers=%d batch=%d inflight=%d keys=%d thresh=%.2f",
+        log_label, n_cpus, cpus_per_task, n_workers, batch, inflight_per_worker,
+        total, memory_threshold,
     )
 
     state_ref = ray.put(state)
-    remote = ray.remote(max_retries=max_task_retries, num_cpus=1)(_run_batch)
+    remote = ray.remote(max_retries=max_task_retries, num_cpus=cpus_per_task)(_run_batch)
 
     batches = list(_chunked(items, max(1, batch)))
     it = iter(batches)
