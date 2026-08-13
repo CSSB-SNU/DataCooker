@@ -35,6 +35,10 @@ lmdb = [
 parallel = [
     "joblib>=1.4.0,<2",
 ]
+ray = [
+    "ray>=2.56,<3",
+    "psutil>=5.9",  # measured-memory admission control in datacooker._ray
+]
 
 [project.scripts]
 datacooker-lmdb = "datacooker.cli.lmdb:main"

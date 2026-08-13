@@ -17,11 +17,13 @@ schemas, CLI, shard-merge, single-writer drain) unchanged: only the within-node 
 changed. ``build_lmdb`` / ``rebuild_lmdb`` use this unconditionally -- there is no
 backend choice.
 
-Caveat: Ray's monitor is reactive (kill + retry), not an admission back-off -- it does
-not lower how much work is in flight. For most builds the default concurrency fits, but
-a memory-heavy step (e.g. schema-B attach) can exceed the threshold in steady state and
-oscillate rather than converge. The ``DATACOOKER_RAY_CPUS_PER_TASK`` / ``_BATCH`` /
-``_INFLIGHT`` env knobs cut the admitted key count for those cases (see below).
+Admission is **measured, not fixed**. Ray's own memory monitor is only a reactive
+last-resort net (it kills + retries a task after it has already blown the threshold,
+which oscillates instead of converging when the steady-state footprint is too big). So
+this loop actively sizes the in-flight task count to *measured* node memory (AIMD:
+grow while memory is comfortable, halve on pressure). Concurrency self-adjusts to what
+the node can hold as record sizes vary -- a light schema-A build ramps to full width, a
+heavy schema-B attach settles low -- with no per-DB tuning and no env knobs.
 
 Design
 ------
@@ -52,6 +54,19 @@ import os
 from collections.abc import Iterator, Sequence
 from importlib import import_module
 from typing import Any
+
+import psutil
+
+# Adaptive-admission watermarks (fraction of node memory actually in use). The controller
+# grows concurrency while below _MEM_LOW and backs off above _MEM_HIGH, staying under
+# Ray's own last-resort kill threshold (0.9) so the monitor almost never has to fire.
+_MEM_HIGH = 0.80
+_MEM_LOW = 0.60
+
+
+def _mem_frac() -> float:
+    """Fraction of node memory in use (accounts for reclaimable cache via `available`)."""
+    return psutil.virtual_memory().percent / 100.0
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +124,7 @@ def iter_ray_chunks(
     installer_qualname: str,
     state: Any,
     log_label: str,
-    n_actors: int = 0,
     batch: int = 50,
-    inflight_per_worker: int = 3,
     memory_threshold: float = 0.9,
     max_task_retries: int = 3,
 ) -> Iterator[list[Any]]:
@@ -154,60 +167,60 @@ def iter_ray_chunks(
         )
     resources = ray.cluster_resources()
     n_cpus = int(resources.get("CPU", os.cpu_count() or 8))
-    # Dial the ADMITTED concurrency down for memory-heavy steps (e.g. schema-B attach).
-    # Ray's memory monitor only kills+retries after a task already blew the threshold --
-    # it never lowers how much work is admitted -- so when the steady-state footprint of
-    # ``workers x inflight x batch`` keys exceeds memory, it oscillates (kill -> respawn ->
-    # OOM -> kill) instead of converging, and the repeated killing can take GCS down with
-    # it. These env knobs (defaults preserve prior behaviour) let a caller cut the
-    # in-flight key count so it fits: fewer keys per task, fewer tasks in flight, and/or
-    # more CPUs per task (Ray's own recommended lever -- reserving k CPUs runs n_cpus/k
-    # tasks at once).
-    cpus_per_task = max(1, int(os.environ.get("DATACOOKER_RAY_CPUS_PER_TASK", "1")))
-    batch = max(1, int(os.environ.get("DATACOOKER_RAY_BATCH", str(batch))))
-    inflight_per_worker = max(
-        1, int(os.environ.get("DATACOOKER_RAY_INFLIGHT", str(inflight_per_worker))),
-    )
-    n_workers = n_actors or max(1, n_cpus // cpus_per_task)
     total = len(items)
-    logger.info(
-        "%s via ray: cpus=%d cpus/task=%d workers=%d batch=%d inflight=%d keys=%d thresh=%.2f",
-        log_label, n_cpus, cpus_per_task, n_workers, batch, inflight_per_worker,
-        total, memory_threshold,
-    )
+    logger.info("%s via ray: cpus=%d batch=%d keys=%d", log_label, n_cpus, batch, total)
 
     state_ref = ray.put(state)
-    remote = ray.remote(max_retries=max_task_retries, num_cpus=cpus_per_task)(_run_batch)
+    remote = ray.remote(max_retries=max_task_retries, num_cpus=1)(_run_batch)
+    batch_iter = _chunked(items, max(1, batch))
 
-    batches = list(_chunked(items, max(1, batch)))
-    it = iter(batches)
+    def _submit() -> Any:
+        nxt = next(batch_iter, None)
+        if nxt is None:
+            return None
+        return remote.remote(worker_qualname, installer_qualname, state_ref, nxt)
+
+    # Measured adaptive admission (AIMD). ``target`` is the in-flight task ceiling; it
+    # grows by one whenever measured memory is comfortable and halves the moment it is
+    # tight, so concurrency converges to what the node actually holds -- climbing to full
+    # width on a light build, settling low while a heavy build's biggest records are in
+    # flight (they arrive first, so the target drops early and recovers as they drain).
+    # Never below 1 (a single outsized record still runs, alone). Ray's kill threshold is
+    # only the backstop.
+    target = max(1, n_cpus // 8)
+    pending: list[Any] = []
+    buffer: list[Any] = []
+    done = 0
+    exhausted = False
+    mem = _mem_frac()
     try:
-        n_prime = min(n_workers * max(1, inflight_per_worker), len(batches))
-        pending: list[Any] = [
-            remote.remote(worker_qualname, installer_qualname, state_ref, next(it))
-            for _ in range(n_prime)
-        ]
-
-        buffer: list[Any] = []
-        done = 0
-        while pending:
+        while True:
+            while not exhausted and len(pending) < min(target, n_cpus):
+                fut = _submit()
+                if fut is None:
+                    exhausted = True
+                    break
+                pending.append(fut)
+            if not pending:
+                break
             ready, pending = ray.wait(pending, num_returns=1, timeout=None)
             for ref in ready:
                 results = ray.get(ref)
                 buffer.extend(results)
                 done += len(results)
-                nxt = next(it, None)
-                if nxt is not None:
-                    pending.append(
-                        remote.remote(
-                            worker_qualname, installer_qualname, state_ref, nxt,
-                        ),
-                    )
+            mem = _mem_frac()
+            if mem > _MEM_HIGH:
+                target = max(1, target // 2)
+            elif mem < _MEM_LOW and target < n_cpus:
+                target += 1
             while len(buffer) >= chunk_size:
                 yield buffer[:chunk_size]
                 del buffer[:chunk_size]
             if done and done % (chunk_size * 5) < batch:
-                logger.info("%s via ray: %d/%d", log_label, done, total)
+                logger.info(
+                    "%s via ray: %d/%d target=%d mem=%.0f%%",
+                    log_label, done, total, target, mem * 100,
+                )
         if buffer:
             yield buffer
     finally:
