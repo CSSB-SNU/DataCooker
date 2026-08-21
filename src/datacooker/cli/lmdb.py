@@ -292,6 +292,17 @@ def merge_command(
     """Merge shard LMDBs matched by a glob pattern."""
     pattern_path = Path(shard_pattern)
     shard_paths = sorted(pattern_path.parent.glob(pattern_path.name))
+    # The pipeline's '{base}_*_shard*.lmdb' pattern has a greedy tier wildcard that also
+    # matches a SIBLING db whose name EXTENDS base (e.g. base 'cif_pdb_attached' vs
+    # 'cif_pdb_attached_train_..._all'): the '*' spans that db's extra '_' tokens, so its
+    # shards get merged in and clobber keys. Keep only this build's own shards -- those
+    # whose tier segment (between '{base}_' and '_shard') is a single token (no '_').
+    if "_*_shard" in pattern_path.name:
+        base = pattern_path.name.split("_*_shard", 1)[0]
+        shard_paths = [
+            p for p in shard_paths
+            if "_" not in p.name[len(base) + 1:].split("_shard", 1)[0]
+        ]
     if not shard_paths:
         msg = f"No LMDB files matched: {shard_pattern}"
         raise click.ClickException(msg)
