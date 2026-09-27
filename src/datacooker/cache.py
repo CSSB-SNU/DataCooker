@@ -1,33 +1,39 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import ItemsView, ValuesView
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Any, Callable
+    from collections.abc import Callable, Iterator, Sequence
 
 
-class ParsingCache:
+class ExecutionContext:
     """
-    Store necessary parsing input & temporary output while parsing a data.
+    Store execution inputs and intermediate outputs for a workflow run.
 
     This cache uses a key_transform function to interpret string keys.
     By default it treats keys as flat strings, but custom transforms
     can allow nested structures (e.g. dot notation).
 
+    Thread-safety: an ``ExecutionContext`` holds mutable per-run state and is
+    **not** safe for concurrent use. One instance belongs to exactly one
+    workflow run on one thread. Concurrency is achieved at a coarser grain by
+    running an independent execution (its own context) per work item — which is
+    what the parallel/LMDB helpers do.
     """
 
     def __init__(
         self,
-        key_transform: Callable[[str], tuple[str, ...]] | None = None,
+        key_transform: Callable[[str], Sequence[str]] | None = None,
     ) -> None:
         self._storage: dict[str, Any] = {}
         if key_transform is None:
             self._key_transform = lambda k: (k,)
         else:
-            self._key_transform = key_transform
+            self._key_transform = lambda k: tuple(key_transform(k))
 
     def add_data(self, name: str, data: object) -> None:
-        """Store Data with a given name."""
+        """Store a value under the given key."""
         parts = self._key_transform(name)
         cur = self._storage
         for part in parts[:-1]:
@@ -41,7 +47,7 @@ class ParsingCache:
         cur[parts[-1]] = data
 
     def __contains__(self, name: str) -> bool:
-        """Return True if name exists in context."""
+        """Return whether a key exists in the execution context."""
         parts = self._key_transform(name)
         cur: Any = self._storage
         for part in parts:
@@ -51,7 +57,7 @@ class ParsingCache:
         return True
 
     def __getitem__(self, name: str) -> object:
-        """Get data by name."""
+        """Return a stored value by key."""
         parts = self._key_transform(name)
         cur: Any = self._storage
         for part in parts:
@@ -60,6 +66,12 @@ class ParsingCache:
                 raise KeyError(msg)
             cur = cur[part]
         return cur
+
+    def get(self, name: str, default: object = None) -> object:
+        """Get data by name, returning a default when the key is missing."""
+        if name in self:
+            return self[name]
+        return default
 
     def keys(self) -> list[str]:
         """Return a list of all keys (flattened back to strings)."""
@@ -75,3 +87,27 @@ class ParsingCache:
 
         _collect(self._storage)
         return result
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over flattened keys stored in the cache."""
+        return iter(self.keys())
+
+    def __len__(self) -> int:
+        """Return the number of flattened keys stored in the cache."""
+        return len(self.keys())
+
+    def items(self) -> ItemsView[str, Any]:
+        """Return a flat items view of the current execution context."""
+        return self.snapshot().items()
+
+    def values(self) -> ValuesView[Any]:
+        """Return a flat values view of the current execution context."""
+        return self.snapshot().values()
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return a flat copy of the execution context."""
+        return {key: self[key] for key in self.keys()}
+
+    def __repr__(self) -> str:
+        """Return a concise representation of the stored flat keys."""
+        return f"{type(self).__name__}({self.snapshot()!r})"

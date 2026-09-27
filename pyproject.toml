@@ -1,22 +1,49 @@
 [project]
 name = "DataCooker"
 version = "0.1.0"
-description = "Data processing API for BioMol"
+description = "Core recipe engine for declarative data processing pipelines"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Sanggeun Park", email = "psk6950@snu.ac.kr" }]
-dependencies = [
-    "biopython>=1.85,<2",
-    "click>=8.1.8,<9",
-    "joblib >=1.4.2,<2",
-    "lmdb>=1.6.2,<2",
-    "omegaconf>=2.3.0,<3",
-    "zstandard>=0.24.0,<1",
-    "typing_extensions>=4.15.0,<5",
-    "numpy>=2.2.6,<3",
-    "networkx>=3.2",
-    "biomol>=1.0.0",
+keywords = ["workflow", "dag", "data-processing", "pipeline", "recipe"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+dependencies = [
+]
+
+[project.optional-dependencies]
+config = [
+    "omegaconf>=2.3.0,<3",
+]
+cli = [
+    "click>=8.1.0,<9",
+    "omegaconf>=2.3.0,<3",
+]
+lmdb = [
+    "joblib>=1.4.0,<2",
+    "lmdb>=1.6.0,<2",
+]
+parallel = [
+    "joblib>=1.4.0,<2",
+]
+
+[project.scripts]
+datacooker-lmdb = "datacooker.cli.lmdb:main"
+datacooker-workflow = "datacooker.cli.workflow:main"
+
+[project.urls]
+Homepage = "https://github.com/CSSB-SNU/DataCooker"
+Repository = "https://github.com/CSSB-SNU/DataCooker"
+Issues = "https://github.com/CSSB-SNU/DataCooker/issues"
 
 [build-system]
 build-backend = "hatchling.build"
@@ -33,15 +60,29 @@ ignore = [
     "D100", # Missing docstring in public module
     "D104", # Missing docstring in public package
     "C901",
+    "COM812", # Formatter-compatible trailing comma handling
     "N806",
     "E501",
+    "ANN401", # Public API accepts arbitrary workflow payloads
+    "FBT001", # Compatibility wrappers expose simple boolean flags
+    "FBT002",
+    "PLR0913", # Public compatibility APIs are intentionally wide
+    "TC001", # Postponed evaluation makes runtime imports acceptable here
+    "TC003",
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["D", "PT009", "PT027"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
 [tool.pixi.workspace]
-channels = ["conda-forge","bioconda"]
+channels = ["conda-forge"]
 platforms = ["linux-64"]
 
 [tool.pixi.pypi-dependencies]
@@ -52,9 +93,6 @@ python = "~=3.10"
 ruff = ">=0.11.6,<0.12"
 pytest = ">=8.4.1,<9"
 ipykernel = ">=6.30.1,<7"
-hmmer = "==3.3.2"
-anarci = "*"
-cd-hit = "*"
 
 
 [tool.hatch.metadata]

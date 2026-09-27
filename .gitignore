@@ -1,5 +1,9 @@
 submits/
 logs/
 .vscode/
-test*
+.pixi/
+__pycache__/
+*.pyc
+test.py
 *.cif
+site/

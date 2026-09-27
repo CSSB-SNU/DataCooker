@@ -1,9 +1,0 @@
-data_dir: ${p:/home/psk6950/data/CCD/components_tmp/}
-file_pattern: "*.cif*"
-
-env_path: ${p:/home/psk6950/data/CCD/biomol_CCD.lmdb}
-recipe: ${p:pipelines/recipe/ccd_recipe_book.py}
-
-load_func: pipelines.transforms.cif_transforms.get_cif_data
-
-n_jobs: -1
