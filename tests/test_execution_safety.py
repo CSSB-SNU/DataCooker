@@ -69,3 +69,18 @@ class ExecutionSafetyTests(unittest.TestCase):
         result = execute(recipe, {"_entry": {"id": "5odi"}, "payload": cycle},
                          key_transform=lambda name: name.split("."))
         self.assertEqual(result, {"result": "5odi"})
+
+
+def test_parallel_run_body_resolves_its_helpers_when_run_as_module(tmp_path):
+    # Run through `python -m`, as SLURM jobs do: a helper defined below the module's
+    # `if __name__ == "__main__": main()` line is not yet bound there (NameError on every node).
+    import subprocess
+    import sys
+
+    config = tmp_path / "empty.yaml"
+    config.write_text("{}\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "datacooker.cli.workflow", "parallel-run", str(config)],
+        capture_output=True, text=True, check=False,
+    )
+    assert "NameError" not in result.stderr

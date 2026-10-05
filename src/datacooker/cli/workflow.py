@@ -187,16 +187,6 @@ def _pop_writer_hooks(config: dict[str, Any]) -> WriterHooks:
     )
 
 
-def main() -> None:
-    """Entry point for ``python -m datacooker.cli.workflow``."""
-    cli()
-
-
-if __name__ == "__main__":
-    main()
-
-
-
 def _require_process_semaphores() -> None:
     """Fail fast where worker processes cannot be created.
 
@@ -211,3 +201,11 @@ def _require_process_semaphores() -> None:
         msg = f"cannot create process semaphores on this node ({exc}); /dev/shm is likely full"
         raise click.ClickException(msg) from exc
 
+
+def main() -> None:
+    """Entry point for ``python -m datacooker.cli.workflow``."""
+    cli()
+
+
+if __name__ == "__main__":
+    main()
