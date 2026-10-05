@@ -1,13 +1,12 @@
 """Execution planner for the Ray fan-out.
 
-Within-node memory is **Ray's** job now (measured admission control -- it throttles
-and retries tasks by real node memory), so the planner no longer predicts per-item
-memory (the old ``peak = n_jobs x E x max_bytes`` model that OOM'd on its blind
-spots). It does only what Ray does not: decide **how many nodes** to spread a build
-across, and **balance** heavy items across them so no shard is lopsided.
-
-Every shard is given the **whole node** (``mem_gb`` / ``cores``); Ray self-regulates
-inside that. ``expansion`` (E) survives only as a recorded stat, not a knob.
+The planner does exactly one thing: decide how many whole-node shards to spread a
+build across, and snake-balance the items so no shard is lopsided. It does NOT predict
+per-item memory or split items into size tiers -- that predict-with-E model had blind
+spots (a record that is cheap on disk but heavy once materialised) and needed per-DB
+tuning. Within-node concurrency is instead bounded by the engine's *measured* memory
+admission gate (``datacooker._ray``): a light record runs at full width, a heavy one
+simply slows intake, so one lane is enough and there is nothing to size.
 """
 from __future__ import annotations
 
@@ -27,7 +26,7 @@ class NodeSpec:
 
 @dataclass(frozen=True, slots=True)
 class Tier:
-    """One size lane of items to be split across snake-balanced shards."""
+    """One lane of items to be split across snake-balanced whole-node shards."""
 
     name: str
     keys: tuple[str, ...]
@@ -39,7 +38,7 @@ class Tier:
 
 @dataclass(frozen=True, slots=True)
 class Plan:
-    """Full fan-out plan: the tiers to submit plus the node profile and stats."""
+    """Full fan-out plan: the lane(s) to submit plus the node profile and stats."""
 
     tiers: tuple[Tier, ...]
     node: NodeSpec
@@ -50,10 +49,10 @@ class Plan:
         return [t for t in self.tiers if t.keys]
 
     def describe(self) -> str:
-        """Render a one-line-per-tier human summary of the plan."""
+        """Render a one-line-per-lane human summary of the plan."""
         lines = [
             f"ray fan-out: cores={self.node.cores} nodes<={self.node.n_nodes} "
-            f"(within-node memory = Ray admission control)",
+            f"(within-node memory = Ray measured admission)",
         ]
         for t in self.tiers:
             if not t.keys:
@@ -88,26 +87,24 @@ def plan(
     node: NodeSpec = _DEFAULT_NODE,
     expansion: float = 100.0,
 ) -> Plan:
-    """Split items into <= ``n_nodes`` snake-balanced shards, one full-node lane.
+    """Snake-balance items across ``<= n_nodes`` whole-node shards, one lane.
 
-    One tier ("all"): each shard is a SLURM job pinned to a whole node running Ray;
-    the planner sets the node count and balances heavy items across shards, and Ray
-    owns memory within each node. ``expansion`` is recorded, not used to size.
+    Each shard is a SLURM job pinned to a whole node running Ray; the planner only sets
+    the node count and spreads heavy items evenly, and Ray's measured admission gate owns
+    memory within each node. ``expansion`` is recorded as a stat, not used to size.
     """
     items = sorted(sizes, key=lambda s: s.value_bytes, reverse=True)
     if not items:
         return Plan((Tier("all", (), node.cores, int(node.mem_gb), 0, 0),), node, expansion)
     tmax = items[0].value_bytes
     n_shards = min(node.n_nodes, len(items))
-    keys = tuple(
-        k for shard in _snake_shards([i.key for i in items], n_shards) for k in shard
-    )
+    keys = tuple(i.key for i in items)
     tier = Tier("all", keys, node.cores, int(node.mem_gb), n_shards, tmax)
     return Plan((tier,), node, expansion)
 
 
 def shard_keys(tier: Tier) -> list[list[str]]:
-    """Re-derive the per-shard key-lists for a tier (snake-balanced)."""
+    """Re-derive the per-shard key-lists for a lane (snake-balanced)."""
     if not tier.keys or tier.n_shards <= 1:
         return [list(tier.keys)]
     return _snake_shards(list(tier.keys), tier.n_shards)

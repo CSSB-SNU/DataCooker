@@ -19,9 +19,14 @@ Human-readable by design (TSV + JSON) and dependency-light (only ``lmdb``).
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
+from itertools import islice
 from pathlib import Path
 from types import ModuleType
+
+from datacooker.lmdb.sharded import MANIFEST, open_env, shard_paths
 
 INDEX_SUFFIX = ".index.tsv"
 META_SUFFIX = ".meta.json"
@@ -52,6 +57,19 @@ class ItemSize:
 
     key: str
     value_bytes: int
+
+
+def measure_files(paths: Iterable[Path]) -> list[ItemSize]:
+    """Read file sizes with bounded concurrent metadata I/O, preserving input order."""
+    def measure(path: Path) -> ItemSize:
+        return ItemSize(str(path), path.stat().st_size)
+
+    sizes: list[ItemSize] = []
+    iterator = iter(paths)
+    with ThreadPoolExecutor() as pool:
+        while batch := list(islice(iterator, 1024)):
+            sizes.extend(pool.map(measure, batch))
+    return sizes
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,8 +112,10 @@ def _require_lmdb() -> ModuleType:
 
 def scan_sizes(db_path: str | Path) -> list[ItemSize]:
     """Return every key's stored value size via a zero-copy cursor."""
-    lmdb = _require_lmdb()
-    env = lmdb.open(str(db_path), readonly=True, lock=False, subdir=True, max_readers=4096)
+    if (Path(db_path) / MANIFEST).is_file():
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            return [item for part in pool.map(scan_sizes, shard_paths(db_path)) for item in part]
+    env = open_env(str(db_path), readonly=True, lock=False, subdir=True, max_readers=4096)
     try:
         out: list[ItemSize] = []
         with env.begin(buffers=True) as txn:

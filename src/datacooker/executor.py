@@ -95,8 +95,15 @@ class Cooker:
         """Execute the requested subgraph in dependency order."""
         requested_targets = self._resolve_requested_targets(targets)
         if validate:
+            available = set(self.context.keys())
+            # Resolve only declared dependencies inside nested inputs. Walking
+            # arbitrary payload dictionaries here can traverse multi-GB metadata.
+            available.update(
+                name for name in self.recipebook.required_inputs(requested_targets)
+                if name in self.context
+            )
             self.recipebook.validate(
-                available_inputs=set(self.context.keys()),
+                available_inputs=available,
                 targets=requested_targets,
             )
 

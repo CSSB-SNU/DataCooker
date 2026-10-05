@@ -6,7 +6,10 @@ import gc
 import heapq
 import logging
 import os
+import shutil
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib import import_module
@@ -16,6 +19,7 @@ from typing import Any, Literal, cast
 from datacooker._parallel import iter_parallel_chunks, run_serial_test
 from datacooker.api import parse_file
 from datacooker.lmdb._shared import load_metadata, rebuild_entry
+from datacooker.lmdb.sharded import MERGE_LIMIT, open_env, publish_shards, should_merge
 from datacooker.protocols import (
     ConvertFunc,
     DeserializeFunc,
@@ -58,11 +62,10 @@ def default_lmdb_key(path: Path) -> str:
 
 def extract_lmdb_keys(env_path: Path) -> list[str]:
     """Return all keys in an LMDB database."""
-    lmdb_module = _require_lmdb()
     if not env_path.exists():
         return []
 
-    env = lmdb_module.open(str(env_path), readonly=True, lock=False)
+    env = open_env(str(env_path), readonly=True, lock=False)
     try:
         with env.begin() as txn:
             return [
@@ -74,14 +77,13 @@ def extract_lmdb_keys(env_path: Path) -> list[str]:
 
 def count_lmdb_entries(env_path: Path) -> int:
     """Count entries in an LMDB database."""
-    lmdb_module = _require_lmdb()
     if not env_path.exists():
         return 0
 
-    env = lmdb_module.open(str(env_path), readonly=True, lock=False)
+    env = open_env(str(env_path), readonly=True, lock=False)
     try:
         with env.begin() as txn:
-            return sum(1 for _ in txn.cursor())
+            return txn.stat()["entries"]
     finally:
         env.close()
 
@@ -203,6 +205,8 @@ def install_rebuild_state(state: Mapping[str, Any]) -> None:
     own read-only handle instead of reusing a dead one.
     """
     _REBUILD_STATE.clear()
+    for env in _REBUILD_ENV.values():
+        env.close()
     _REBUILD_ENV.clear()
     _REBUILD_STATE.update(state)
 
@@ -285,7 +289,7 @@ def _rebuild_worker(key: str) -> _RebuildResult | list[_RebuildResult] | None:
     pid = os.getpid()
     env = _REBUILD_ENV.get(pid)
     if env is None:
-        env = _require_lmdb().open(
+        env = open_env(
             str(state["old_env_path"]),
             readonly=True,
             lock=False,
@@ -347,8 +351,9 @@ def build_lmdb(
 
     The fan-out backend is **Ray, always** -- there is no backend choice. Ray's
     measured admission control replaced the fork/joblib predictive memory model
-    that OOM'd on its blind spots; ``n_jobs`` is advisory (Ray sizes to node CPUs)
-    and ``ray_batch`` sets keys-per-task. See ``datacooker._ray``.
+    that OOM'd on its blind spots; ``n_jobs`` is advisory (Ray sizes to node CPUs),
+    and ``ray_batch`` sets keys-per-task (default 1). Concurrency is bounded by the
+    engine's measured-memory admission gate, not tuning. See ``datacooker._ray``.
     """
     resolved_reader = ReaderHooks.from_mapping(
         None,
@@ -367,53 +372,55 @@ def build_lmdb(
     lmdb_module = _require_lmdb()
     Path(env_path).parent.mkdir(parents=True, exist_ok=True)
     env = lmdb_module.open(str(env_path), map_size=int(map_size))
-    metadata_dict = load_metadata(
-        metadata_recipe=metadata_recipe,
-        metadata_input=metadata_input,
-        extra_kwargs=extra_kwargs,
-    )
-    base_inputs = dict(inputs or {})
-    source_paths = list(data_list)
-    pending_paths = (
-        filter_pending_lmdb_paths(source_paths, env_path, key_func=resolved_key_func)
-        if skip_existing
-        else source_paths
-    )
-    skipped_existing = len(source_paths) - len(pending_paths)
+    try:
+        metadata_dict = load_metadata(
+            metadata_recipe=metadata_recipe,
+            metadata_input=metadata_input,
+            extra_kwargs=extra_kwargs,
+        )
+        base_inputs = dict(inputs or {})
+        source_paths = list(data_list)
+        pending_paths = (
+            filter_pending_lmdb_paths(source_paths, env_path, key_func=resolved_key_func)
+            if skip_existing
+            else source_paths
+        )
+        skipped_existing = len(source_paths) - len(pending_paths)
 
-    # Ray is DataCooker's only build fan-out backend: the fork/joblib predictive
-    # memory model (n_jobs x E x max_bytes) OOM'd on its blind spots (a deep MSA's
-    # dense expansion, the parent chunk buffer), so within-node concurrency is now
-    # Ray's MEASURED admission control -- no per-DB n_jobs/E/shard tuning. The
-    # top-level ``_build_worker`` reads its recipe/metadata/loader from
-    # ``_BUILD_STATE``, shipped to each Ray worker once via the plasma object store.
-    build_state = {
-        "key_func": resolved_key_func,
-        "base_inputs": base_inputs,
-        "metadata_dict": metadata_dict,
-        "recipe": recipe,
-        "loader": resolved_reader.loader,
-        "key_transform": resolved_reader.key_transform,
-        "writer": resolved_writer,
-        "extra_kwargs": dict(extra_kwargs),
-    }
-    install_build_state(build_state)
-    run_serial_test(_build_worker, pending_paths, enabled=test_run)
-    stats = _parallel_write(
-        env=env,
-        items=pending_paths,
-        chunk_size=chunk_size,
-        n_jobs=n_jobs,
-        process_item=_build_worker,
-        error_mode=error_mode,
-        ray_spec={
-            "worker_qualname": "datacooker.lmdb.core._build_worker",
-            "installer_qualname": "datacooker.lmdb.core.install_build_state",
-            "state": build_state,
-            **({"batch": ray_batch} if ray_batch else {}),
-        },
-    )
-    env.close()
+        # Ray is DataCooker's only build fan-out backend: the fork/joblib predictive
+        # memory model (n_jobs x E x max_bytes) OOM'd on its blind spots (a deep MSA's
+        # dense expansion, the parent chunk buffer), so within-node concurrency is now
+        # Ray's MEASURED admission control -- no per-DB n_jobs/E/shard tuning. The
+        # top-level ``_build_worker`` reads its recipe/metadata/loader from
+        # ``_BUILD_STATE``, shipped to each Ray worker once via the plasma object store.
+        build_state = {
+            "key_func": resolved_key_func,
+            "base_inputs": base_inputs,
+            "metadata_dict": metadata_dict,
+            "recipe": recipe,
+            "loader": resolved_reader.loader,
+            "key_transform": resolved_reader.key_transform,
+            "writer": resolved_writer,
+            "extra_kwargs": dict(extra_kwargs),
+        }
+        install_build_state(build_state)
+        run_serial_test(_build_worker, pending_paths, enabled=test_run)
+        stats = _parallel_write(
+            env=env,
+            items=pending_paths,
+            chunk_size=chunk_size,
+            n_jobs=n_jobs,
+            process_item=_build_worker,
+            error_mode=error_mode,
+            ray_spec={
+                "worker_qualname": "datacooker.lmdb.core._build_worker",
+                "installer_qualname": "datacooker.lmdb.core.install_build_state",
+                "state": build_state,
+                **({"batch": ray_batch} if ray_batch else {}),
+            },
+        )
+    finally:
+        env.close()
     return LmdbWriteReport(
         attempted=len(source_paths),
         written=stats.written,
@@ -497,76 +504,78 @@ def rebuild_lmdb(
     lmdb_module = _require_lmdb()
     Path(new_env_path).parent.mkdir(parents=True, exist_ok=True)
     new_env = lmdb_module.open(str(new_env_path), map_size=int(map_size))
-    metadata_dict = load_metadata(
-        metadata_recipe=metadata_recipe,
-        metadata_input=metadata_input,
-        extra_kwargs=extra_kwargs,
-    )
-    parameter_dict = dict(parameters or {})
-
-    old_keys = extract_lmdb_keys(old_env_path)
-    if key_list is not None:
-        # Process only an explicit key set (e.g. a size tier's key-list), instead
-        # of a hash slice -- lets giants run in their own low-concurrency lane.
-        if isinstance(key_list, (str, Path)):
-            with Path(key_list).open(encoding="utf-8") as f:
-                wanted = {ln.strip() for ln in f if ln.strip()}
-        else:
-            wanted = {str(k) for k in key_list}
-        old_keys = [k for k in old_keys if k in wanted]
-    if shard_idx is not None:
-        old_keys = shard_items_by_key(
-            old_keys,
-            key_func=lambda key: key,
-            node_rank=shard_idx,
-            node_count=n_shards,
+    try:
+        metadata_dict = load_metadata(
+            metadata_recipe=metadata_recipe,
+            metadata_input=metadata_input,
+            extra_kwargs=extra_kwargs,
         )
-    pending_keys, n_parsed = _pending_source_keys(
-        old_keys,
-        new_env_path,
-        skip_existing=skip_existing,
-        explode_entries=explode_entries,
-        explode_key_sep=explode_key_sep,
-    )
-    skipped_existing = len(old_keys) - len(pending_keys)
-    logger.info("Already parsed %d entries into %s.", n_parsed, new_env_path)
-    logger.info("To be parsed %d entries.", len(pending_keys))
+        parameter_dict = dict(parameters or {})
 
-    # Ray-only fan-out (see build_lmdb): the top-level ``_rebuild_worker`` reads its
-    # recipe/metadata/reader from ``_REBUILD_STATE``, shipped to each Ray worker once
-    # via the plasma object store. Concurrency is Ray's measured admission control,
-    # not a predicted n_jobs -- this is the path that stopped the deep-MSA OOMs.
-    rebuild_state = {
-        "old_env_path": old_env_path,
-        "reader": resolved_reader,
-        "recipe": recipe,
-        "metadata_dict": metadata_dict,
-        "parameter_dict": parameter_dict,
-        "key_transform": resolve_key_transform(reader=resolved_reader),
-        "split_entries": split_entries,
-        "explode_entries": explode_entries,
-        "explode_key_sep": explode_key_sep,
-        "explode_value_key": explode_value_key,
-        "writer": resolved_writer,
-        "extra_kwargs": dict(extra_kwargs),
-    }
-    install_rebuild_state(rebuild_state)
-    run_serial_test(_rebuild_worker, pending_keys, enabled=test_run)
-    stats = _parallel_write(
-        env=new_env,
-        items=pending_keys,
-        chunk_size=chunk_size,
-        n_jobs=n_jobs,
-        process_item=_rebuild_worker,
-        error_mode=error_mode,
-        ray_spec={
-            "worker_qualname": "datacooker.lmdb.core._rebuild_worker",
-            "installer_qualname": "datacooker.lmdb.core.install_rebuild_state",
-            "state": rebuild_state,
-            **({"batch": ray_batch} if ray_batch else {}),
-        },
-    )
-    new_env.close()
+        old_keys = extract_lmdb_keys(old_env_path)
+        if key_list is not None:
+            # Process only an explicit key set (e.g. a size tier's key-list), instead
+            # of a hash slice -- lets giants run in their own low-concurrency lane.
+            if isinstance(key_list, (str, Path)):
+                with Path(key_list).open(encoding="utf-8") as f:
+                    wanted = {ln.strip() for ln in f if ln.strip()}
+            else:
+                wanted = {str(k) for k in key_list}
+            old_keys = [k for k in old_keys if k in wanted]
+        if shard_idx is not None:
+            old_keys = shard_items_by_key(
+                old_keys,
+                key_func=lambda key: key,
+                node_rank=shard_idx,
+                node_count=n_shards,
+            )
+        pending_keys, n_parsed = _pending_source_keys(
+            old_keys,
+            new_env_path,
+            skip_existing=skip_existing,
+            explode_entries=explode_entries,
+            explode_key_sep=explode_key_sep,
+        )
+        skipped_existing = len(old_keys) - len(pending_keys)
+        logger.info("Already parsed %d entries into %s.", n_parsed, new_env_path)
+        logger.info("To be parsed %d entries.", len(pending_keys))
+
+        # Ray-only fan-out (see build_lmdb): the top-level ``_rebuild_worker`` reads its
+        # recipe/metadata/reader from ``_REBUILD_STATE``, shipped to each Ray worker once
+        # via the plasma object store. Concurrency is Ray's measured admission control,
+        # not a predicted n_jobs -- this is the path that stopped the deep-MSA OOMs.
+        rebuild_state = {
+            "old_env_path": old_env_path,
+            "reader": resolved_reader,
+            "recipe": recipe,
+            "metadata_dict": metadata_dict,
+            "parameter_dict": parameter_dict,
+            "key_transform": resolve_key_transform(reader=resolved_reader),
+            "split_entries": split_entries,
+            "explode_entries": explode_entries,
+            "explode_key_sep": explode_key_sep,
+            "explode_value_key": explode_value_key,
+            "writer": resolved_writer,
+            "extra_kwargs": dict(extra_kwargs),
+        }
+        install_rebuild_state(rebuild_state)
+        run_serial_test(_rebuild_worker, pending_keys, enabled=test_run)
+        stats = _parallel_write(
+            env=new_env,
+            items=pending_keys,
+            chunk_size=chunk_size,
+            n_jobs=n_jobs,
+            process_item=_rebuild_worker,
+            error_mode=error_mode,
+            ray_spec={
+                "worker_qualname": "datacooker.lmdb.core._rebuild_worker",
+                "installer_qualname": "datacooker.lmdb.core.install_rebuild_state",
+                "state": rebuild_state,
+                **({"batch": ray_batch} if ray_batch else {}),
+            },
+        )
+    finally:
+        new_env.close()
     return LmdbWriteReport(
         attempted=len(old_keys),
         written=stats.written,
@@ -651,7 +660,7 @@ def rekey_lmdb(
     # disabled whenever we resume into a non-empty destination.
     can_append = append if append is not None else not existing_keys
 
-    old_env = lmdb_module.open(
+    old_env = open_env(
         str(old_env_path),
         readonly=True,
         lock=False,
@@ -762,6 +771,63 @@ def merge_lmdb_shards(
     value_deserializer: Callable[[bytes], dict] | None = None,
     value_serializer: Callable[[dict], bytes] | None = None,
 ) -> LmdbWriteReport:
+    """Build a fresh merge before replacing the destination.
+
+    A failed merge preserves the previous database and its sidecars. Publication
+    uses same-filesystem renames; readers must not open the destination during
+    replacement. If publication and rollback both fail, the previous database is
+    retained in the staging directory for recovery.
+    """
+    merged_env_path = Path(merged_env_path)
+    total = sum(count_lmdb_entries(Path(p)) for p in shard_paths)
+    if not should_merge(total):
+        written = publish_shards(list(shard_paths), merged_env_path, overwrite=overwrite)
+        logger.info("Published %d entries as shard_lmdb (limit %d)", written, MERGE_LIMIT)
+        return LmdbWriteReport(attempted=written, written=written)
+    if merged_env_path.exists() and not overwrite:
+        msg = f"{merged_env_path} already exists. Use overwrite=True to replace it."
+        raise FileExistsError(msg)
+    merged_env_path.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{merged_env_path.name}-merge-",
+                                  dir=merged_env_path.parent))
+    fresh, previous = stage / "new", stage / "previous"
+    try:
+        report = _merge_lmdb_shards_into_empty(
+            shard_paths, fresh, map_size=map_size, on_duplicate=on_duplicate,
+            value_deserializer=value_deserializer, value_serializer=value_serializer,
+        )
+        if merged_env_path.exists():
+            if not overwrite:
+                msg = f"{merged_env_path} appeared during merge."
+                raise FileExistsError(msg)
+            merged_env_path.rename(previous)
+        try:
+            fresh.rename(merged_env_path)
+        except BaseException:
+            if previous.exists():
+                previous.rename(merged_env_path)
+            raise
+        # Indexing is a separate step; old size/schema summaries are now invalid.
+        for suffix in (".index.tsv", ".meta.json"):
+            Path(str(merged_env_path) + suffix).unlink(missing_ok=True)
+        if previous.exists():
+            shutil.rmtree(previous)
+        return report
+    finally:
+        if not previous.exists():
+            shutil.rmtree(stage)
+
+
+def _merge_lmdb_shards_into_empty(
+    shard_paths: Sequence[Path],
+    merged_env_path: Path,
+    *,
+    map_size: int = int(1e12),
+    overwrite: bool = False,
+    on_duplicate: DuplicatePolicy = "overwrite",
+    value_deserializer: Callable[[bytes], dict] | None = None,
+    value_serializer: Callable[[dict], bytes] | None = None,
+) -> LmdbWriteReport:
     """Merge multiple LMDB shard databases into one database.
 
     ``on_duplicate="union"`` combines colliding records by deep-merging their
@@ -784,75 +850,75 @@ def merge_lmdb_shards(
         msg = f"{merged_env_path} already exists. Use overwrite=True to replace it."
         raise FileExistsError(msg)
 
-    merged_env = lmdb_module.open(str(merged_env_path), map_size=map_size)
-    total_keys = 0
-    duplicate_keys = 0
+    with ExitStack() as stack:
+        merged_env = lmdb_module.open(str(merged_env_path), map_size=map_size)
+        stack.callback(merged_env.close)
+        total_keys = 0
+        duplicate_keys = 0
 
-    # K-way merge of the shards' key-sorted cursors -> one globally key-sorted
-    # stream. New keys go in with MDB_APPEND (sequential bulk fill of the B-tree:
-    # far faster than random puts, no page churn). Duplicates land CONSECUTIVELY
-    # in the sorted stream, so they are detected by comparing to the last key --
-    # no O(n) ``seen_keys`` set (which itself OOMs on 16M-entry merges). The write
-    # txn is flushed every ``flush_bytes`` so dirty pages stay bounded regardless
-    # of value size; MDB_APPEND stays valid across commits since keys only ascend.
-    flush_bytes = 2 * 1024**3
-    pending_bytes = 0
+        # K-way merge of the shards' key-sorted cursors -> one globally key-sorted
+        # stream. New keys go in with MDB_APPEND (sequential bulk fill of the B-tree:
+        # far faster than random puts, no page churn). Duplicates land CONSECUTIVELY
+        # in the sorted stream, so they are detected by comparing to the last key --
+        # no O(n) ``seen_keys`` set (which itself OOMs on 16M-entry merges). The write
+        # txn is flushed every ``flush_bytes`` so dirty pages stay bounded regardless
+        # of value size; MDB_APPEND stays valid across commits since keys only ascend.
+        flush_bytes = 2 * 1024**3
+        pending_bytes = 0
 
-    shard_envs = [
-        lmdb_module.open(str(p), readonly=True, lock=False) for p in shard_paths
-    ]
-    shard_txns = [e.begin() for e in shard_envs]
-    streams = [t.cursor().iternext(keys=True, values=True) for t in shard_txns]
-    merged_stream = heapq.merge(*streams, key=lambda kv: bytes(kv[0]))
+        shard_txns = []
+        for path in shard_paths:
+            env = lmdb_module.open(str(path), readonly=True, lock=False)
+            stack.callback(env.close)
+            txn = env.begin()
+            stack.callback(txn.abort)
+            shard_txns.append(txn)
+        streams = [t.cursor().iternext(keys=True, values=True) for t in shard_txns]
+        merged_stream = heapq.merge(*streams, key=lambda kv: bytes(kv[0]))
 
-    merged_txn = merged_env.begin(write=True)
-    last_key: bytes | None = None
-    try:
-        for key, value in merged_stream:
-            k = bytes(key)
-            v = bytes(value)
-            if k == last_key:  # duplicate (consecutive in the sorted stream)
-                duplicate_keys += 1
-                if on_duplicate == "skip":
-                    continue
-                if on_duplicate == "error":
-                    msg = (
-                        f"Duplicate LMDB key '{k.decode()}' encountered while "
-                        f"merging shards into '{merged_env_path}'."
-                    )
-                    raise KeyError(msg)  # noqa: TRY301  # in-loop guard; abstracting would restructure the merge
-                if on_duplicate == "union":
-                    # Both serializers are non-None here: validated at entry when
-                    # on_duplicate == "union". cast is runtime-invisible.
-                    serialize = cast("Callable[[dict], bytes]", value_serializer)
-                    deserialize = cast("Callable[[bytes], dict]", value_deserializer)
-                    existing = merged_txn.get(k)
-                    if existing is not None:
-                        v = serialize({
-                            **deserialize(bytes(existing)),
-                            **deserialize(v),
-                        })
-                merged_txn.put(k, v)  # append=False: overwrite the just-written key
-            else:
-                merged_txn.put(k, v, append=True)  # sequential bulk load
-                total_keys += 1
-                last_key = k
-            pending_bytes += len(v)
-            if pending_bytes >= flush_bytes:
-                merged_txn.commit()
-                merged_txn = merged_env.begin(write=True)
-                pending_bytes = 0
-        merged_txn.commit()
-    except BaseException:
-        merged_txn.abort()
-        raise
-    finally:
-        for txn in shard_txns:
-            txn.abort()
-        for env in shard_envs:
-            env.close()
-        merged_env.sync()
-        merged_env.close()
+        merged_txn = merged_env.begin(write=True)
+        last_key: bytes | None = None
+        try:
+            for key, value in merged_stream:
+                k = bytes(key)
+                v = bytes(value)
+                if k == last_key:  # duplicate (consecutive in the sorted stream)
+                    duplicate_keys += 1
+                    if on_duplicate == "skip":
+                        continue
+                    if on_duplicate == "error":
+                        msg = (
+                            f"Duplicate LMDB key '{k.decode()}' encountered while "
+                            f"merging shards into '{merged_env_path}'."
+                        )
+                        raise KeyError(msg)  # noqa: TRY301  # in-loop guard; abstracting would restructure the merge
+                    if on_duplicate == "union":
+                        # Both serializers are non-None here: validated at entry when
+                        # on_duplicate == "union". cast is runtime-invisible.
+                        serialize = cast("Callable[[dict], bytes]", value_serializer)
+                        deserialize = cast("Callable[[bytes], dict]", value_deserializer)
+                        existing = merged_txn.get(k)
+                        if existing is not None:
+                            v = serialize({
+                                **deserialize(bytes(existing)),
+                                **deserialize(v),
+                            })
+                    merged_txn.put(k, v)  # append=False: overwrite the just-written key
+                else:
+                    merged_txn.put(k, v, append=True)  # sequential bulk load
+                    total_keys += 1
+                    last_key = k
+                pending_bytes += len(v)
+                if pending_bytes >= flush_bytes:
+                    merged_txn.commit()
+                    merged_txn = merged_env.begin(write=True)
+                    pending_bytes = 0
+            merged_txn.commit()
+        except BaseException:
+            merged_txn.abort()
+            raise
+        else:
+            merged_env.sync()
 
     logger.info("[Done] Merged %d shards into %s", len(shard_paths), merged_env_path)
     logger.info("Total keys merged: %d", total_keys)
@@ -869,14 +935,13 @@ def _get_env(
     readonly: bool,
     lock: bool,
 ) -> Any:
-    lmdb_module = _require_lmdb()
     # Key by PID: an LMDB env must not be shared across a fork (its internal
     # mutexes deadlock). Under the "multiprocessing" backend, forked workers
     # then miss the parent's cached env and open their own handle.
     key = (str(path), readonly, lock, os.getpid())
     env = _ENV_CACHE.get(key)
     if env is None:
-        env = lmdb_module.open(str(path), readonly=readonly, lock=lock)
+        env = open_env(str(path), readonly=readonly, lock=lock)
         _ENV_CACHE[key] = env
     return env
 
@@ -926,7 +991,9 @@ def _parallel_write(
                         continue
                     pending_writes.append((key, payload))
             for key, payload in pending_writes:
-                txn.put(key, payload)
+                if not txn.put(key, payload, overwrite=False):
+                    msg = f"Duplicate output key {key!r}; select a canonical input before building"
+                    raise ValueError(msg)
                 written += 1
     return _WriteStats(
         written=written,

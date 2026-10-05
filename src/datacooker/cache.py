@@ -27,6 +27,7 @@ class ExecutionContext:
         key_transform: Callable[[str], Sequence[str]] | None = None,
     ) -> None:
         self._storage: dict[str, Any] = {}
+        self._names: dict[str, None] = {}
         if key_transform is None:
             self._key_transform = lambda k: (k,)
         else:
@@ -45,6 +46,7 @@ class ExecutionContext:
             msg = f"Data with name '{name}' already exists in context."
             raise KeyError(msg)
         cur[parts[-1]] = data
+        self._names[name] = None
 
     def __contains__(self, name: str) -> bool:
         """Return whether a key exists in the execution context."""
@@ -74,19 +76,8 @@ class ExecutionContext:
         return default
 
     def keys(self) -> list[str]:
-        """Return a list of all keys (flattened back to strings)."""
-        result: list[str] = []
-
-        def _collect(d: dict[str, Any], prefix: str = "") -> None:
-            for k, v in d.items():
-                new_key = f"{prefix}.{k}" if prefix else k
-                if isinstance(v, dict):
-                    _collect(v, new_key)
-                else:
-                    result.append(new_key)
-
-        _collect(self._storage)
-        return result
+        """Return registered names, including dotted names, without traversing values."""
+        return list(self._names)
 
     def __iter__(self) -> Iterator[str]:
         """Iterate over flattened keys stored in the cache."""

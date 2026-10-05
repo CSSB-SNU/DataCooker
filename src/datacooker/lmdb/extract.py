@@ -7,7 +7,7 @@ import signal
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from datacooker._parallel import iter_parallel_chunks, require_joblib, run_serial_test
 from datacooker.api import parse_dict
@@ -81,9 +81,13 @@ def extract_lmdb_records(
     test_run: bool = True,
     prefer: str = "processes",
     task_timeout: float | None = None,
+    error_mode: Literal["raise", "skip"] = "raise",
     **extra_kwargs: Any,
 ) -> dict[str, Any]:
     """Extract recipe outputs from every LMDB record and optionally merge them."""
+    if error_mode not in {"raise", "skip"}:
+        msg = f"Unknown extraction error_mode: {error_mode}"
+        raise ValueError(msg)
     resolved_reader = ReaderHooks.from_mapping(
         None,
         adapter=adapter,
@@ -149,6 +153,8 @@ def extract_lmdb_records(
     ):
         for key, result, error in chunk_results:
             if error is not None:
+                if error_mode == "raise":
+                    raise error
                 logger.error("Error extracting %s: %s", key, error)
                 continue
             merged_output[key] = result

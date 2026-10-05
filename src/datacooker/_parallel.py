@@ -87,12 +87,10 @@ def iter_parallel_chunks(
     threads). Used by ``extract`` and ``processing.batch``.
 
     ``backend="ray"``: the Ray fan-out (``_ray.iter_ray_chunks``) used by
-    ``build_lmdb`` / ``rebuild_lmdb`` -- concurrency self-regulates to measured node
-    memory (admission control) instead of a predicted ``n_jobs``, so it needs no
-    per-DB tuning. Requires ``ray_spec`` (``{worker_qualname, installer_qualname,
+    ``build_lmdb`` / ``rebuild_lmdb`` -- concurrency grows within ``n_jobs`` and pauses under measured node
+    memory pressure. Requires ``ray_spec`` (``{worker_qualname, installer_qualname,
     state, ...}``) because a Ray worker has no fork to inherit module globals from;
-    the state is shipped once via the plasma object store. ``process_item`` /
-    ``n_jobs`` / ``prefer`` are unused on this path.
+    the state is shipped once via the plasma object store. ``process_item`` and ``prefer`` are unused on this path.
     """
     if backend == "ray":
         if ray_spec is None:
@@ -104,6 +102,7 @@ def iter_parallel_chunks(
         yield from iter_ray_chunks(
             items=items,
             chunk_size=chunk_size,
+            n_jobs=n_jobs,
             log_label=log_label,
             state=ray_spec["state"],
             **ray_kwargs,

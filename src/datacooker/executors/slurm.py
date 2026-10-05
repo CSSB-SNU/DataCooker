@@ -7,6 +7,7 @@ or tier is hard-coded in shell -- the driver builds the commands in Python.
 """
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from collections.abc import Callable
@@ -80,10 +81,21 @@ class SlurmExecutor:
             f"#SBATCH -e {self.log_dir}/{out_pat}.err\n"
             "set -euo pipefail\n"
             f"cd {shlex.quote(str(self.repo))}\n"
-            'export PYTHONPATH="."\n'
+            f"job_status_dir={shlex.quote(str(self.log_dir))}\n"
+            "record_job_exit() {\n"
+            "  job_exit_code=$?\n"
+            "  trap - EXIT\n"
+            "  set +e\n"
+            "  printf '{\"job_id\":\"%s\",\"exit_code\":%d}\\n' \"${SLURM_JOB_ID}\" \"$job_exit_code\" "
+            '> "$job_status_dir/${SLURM_JOB_ID}.exit.json.tmp"\n'
+            '  mv -- "$job_status_dir/${SLURM_JOB_ID}.exit.json.tmp" "$job_status_dir/${SLURM_JOB_ID}.exit.json"\n'
+            '  exit "$job_exit_code"\n'
+            "}\n"
+            "trap record_job_exit EXIT\n"
+            'export PYTHONPATH="${PYTHONPATH:-.}"\n'
             f'CMD=$(sed -n "{line}p" {shlex.quote(str(manifest))})\n'
             'echo "host=$(hostname) task=${SLURM_ARRAY_TASK_ID:-0} start=$(date)"\n'
-            f'pixi run --manifest-path {shlex.quote(str(self.pixi_manifest))} bash -c "$CMD"\n'
+            f'pixi run --frozen --manifest-path {shlex.quote(str(self.pixi_manifest))} bash -c "$CMD"\n'
             'echo "end=$(date)"\n',
             encoding="utf-8",
         )
@@ -92,6 +104,8 @@ class SlurmExecutor:
     def _sbatch(self, script: Path, name: str, mem_gb: int, cores: int,
                 depends_on: tuple[str, ...], array: str | None) -> str | None:
         cmd = ["sbatch", "--parsable", f"--mem={mem_gb}g", f"-c{cores}"]
+        if excluded := os.environ.get("DATACOOKER_EXCLUDE_NODES"):
+            cmd.append(f"--exclude={excluded}")
         if array is not None:
             cmd.append(f"--array={array}")
         dep = [d for d in depends_on if d]
@@ -106,7 +120,46 @@ class SlurmExecutor:
             return fake
         out = subprocess.run(cmd, capture_output=True, text=True, check=True)  # noqa: S603
         job_id = out.stdout.strip().split(";")[0]
+        script.with_suffix(".job-id").write_text(job_id + "\n", encoding="utf-8")
         print(f"[slurm] {name}: job {job_id}"  # noqa: T201
               + (f" afterok {dep}" if dep else "")
               + (f" array {array}" if array else ""))
         return job_id
+
+
+def wait_for_jobs(job_ids: tuple[str, ...], *, poll_seconds: float = 30.0) -> None:
+    """Wait for upstream terminal jobs before reading their generated inputs.
+
+    ``afterok`` alone cannot order the planner's local filesystem reads. A pipeline
+    invocation with dependencies therefore stays alive until those inputs are final.
+    Unknown jobs and failed terminal states fail explicitly; neither means success.
+    """
+    import re
+    import time
+
+    pending = set(job_ids)
+    active_states = {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "SUSPENDED", "REQUEUED", "RESIZING"}
+    while pending:
+        for job_id in sorted(pending):
+            result = subprocess.run(  # noqa: S603
+                ["scontrol", "show", "job", "-o", job_id],  # noqa: S607
+                capture_output=True, text=True, check=False,
+            )
+            states = re.findall(r"\bJobState=(\S+)", result.stdout)
+            reasons = re.findall(r"\bReason=(\S+)", result.stdout)
+            if result.returncode or not states:
+                msg = f"Cannot confirm upstream job {job_id}: {result.stderr.strip() or result.stdout.strip()}"
+                raise RuntimeError(msg)
+            if "DependencyNeverSatisfied" in reasons:
+                msg = f"Upstream job {job_id} cannot run: DependencyNeverSatisfied."
+                raise RuntimeError(msg)
+            if all(state == "COMPLETED" for state in states):
+                pending.remove(job_id)
+                continue
+            failed = set(states) - active_states - {"COMPLETED"}
+            if failed:
+                msg = f"Upstream job {job_id} failed: {', '.join(sorted(failed))}."
+                raise RuntimeError(msg)
+        if pending:
+            print(f"[planner] waiting for upstream jobs: {', '.join(sorted(pending))}", flush=True)  # noqa: T201
+            time.sleep(poll_seconds)

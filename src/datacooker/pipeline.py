@@ -1,24 +1,14 @@
-"""Planning-first pipeline driver.
+"""Size-balanced pipeline submission with exact shard manifests.
 
-The single entry point that makes every LMDB build/rebuild *plan from per-item
-sizes before it submits*. Given a declarative config it:
-
-  1. sizes the items -- stored value bytes (rebuild, from ``<db>.index.tsv``) or
-     source-file bytes (build) -- building the source index if missing;
-  2. plans size tiers (small @ full cores; giants isolated) from those sizes;
-  3. submits one job array per tier via an Executor, each shard running the
-     engine (``datacooker.cli.lmdb {build,rebuild}``) with the tier's item list
-     (the engine fans out over Ray -- no per-shard worker knobs);
-  4. merges the tier-shard outputs into the target (``afterok``);
-  5. writes the target's own ``.index.tsv`` + ``.meta.json`` (mandatory post-step).
-
-Hash-sharding is gone: items are partitioned by size, so giants never cluster
-onto a worker and OOM. No human ever tunes n_jobs / mem / chunk / shards.
+The planner distributes descending-size inputs across nodes once. Each shard runs
+bounded Ray workers, then an afterok merge publishes a fresh database and indexing
+writes its sidecars. Input size balances I/O; it does not prove peak memory fits.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 from datacooker.executors.base import Executor, TaskHandle
 from datacooker.lmdb.index import ItemSize
@@ -42,7 +32,8 @@ class PipelineConfig:
     node: NodeSpec = field(default_factory=NodeSpec)
     schema: str = "unknown"
     map_size: int = 300_000_000_000
-    merge_on_duplicate: str = "overwrite"
+    merge_on_duplicate: str = "error"
+    run_id: str = field(default_factory=lambda: uuid4().hex, init=False)
 
     def __post_init__(self) -> None:
         """Normalise paths and validate ``op``."""
@@ -56,9 +47,8 @@ class PipelineConfig:
 
     @property
     def base(self) -> str:
-        """Target path without ``.lmdb`` -- tier-shard outputs hang off this."""
-        s = str(self.target)
-        return s.removesuffix(".lmdb")
+        """Unique per-run shard prefix, on the destination filesystem."""
+        return str(self.target.parent / f".{self.target.stem}.build" / self.run_id / self.target.stem)
 
 
 def run(
@@ -88,8 +78,11 @@ def run(
 
     # one array per tier
     tier_handles: list[TaskHandle] = []
+    shard_outputs: list[str] = []
     for tier in p.nonempty():
         shards = shard_keys(tier)
+        shard_outputs.extend(f"{cfg.base}_{tier.name}_shard{i}.lmdb"
+                             for i in range(len(shards)))
         for i, ids in enumerate(shards):
             (keyfiles_dir / f"items_{tier.name}_shard{i}.txt").write_text(
                 "\n".join(ids) + "\n", encoding="utf-8")
@@ -104,9 +97,11 @@ def run(
                 argv += ["--n-shards", "1"]
             else:  # build: resume-safe re-runs (rebuild already skip_existing=True)
                 argv += ["--skip-existing"]
-            # Bound the drain buffer to ~a few worker-waves: --chunk-size caps how
-            # many results are regrouped before a write, keeping the parent at
-            # worker-memory scale (the 10k default let it hoard and OOM).
+            # Bound the drain buffer to ~a few worker-waves: --chunk-size caps how many
+            # results are regrouped before a write, so the parent holds at most that many
+            # (small, serialized) records at once (the 10k default let it hoard and OOM).
+            # One item per Ray task (the engine default) plus the measured-memory gate own
+            # the within-node concurrency; there is nothing per-shard to size here.
             argv += ["--chunk-size", str(max(64, 4 * tier.n_jobs))]
             return argv
 
@@ -119,13 +114,16 @@ def run(
             depends_on=depends_on,
         ))
 
-    # merge (afterok all tiers)
+    shard_manifest = keyfiles_dir / "merge_shards.txt"
+    shard_manifest.write_text("".join(path + "\n" for path in shard_outputs), encoding="utf-8")
+
+    # Finalize after all tiers: <=5M merges, >5M publishes immutable shards.
     merge = executor.run_once(
-        name=f"{cfg.target.stem}_merge",
-        argv=[*CLI, "merge", f"{cfg.base}_*_shard*.lmdb",
+        name=f"{cfg.target.stem}_publish",
+        argv=[*CLI, "merge", "--shard-list", str(shard_manifest),
               "--output", str(cfg.target), "--map-size", str(cfg.map_size),
               "--overwrite", "--on-duplicate", cfg.merge_on_duplicate],
-        mem_gb=200, cores=16,
+        mem_gb=min(200, int(cfg.node.mem_gb)), cores=min(16, cfg.node.cores),
         depends_on=tuple(h.job_id for h in tier_handles if h.job_id),
     )
 
@@ -136,6 +134,6 @@ def run(
               "--schema", cfg.schema,
               *(["--source", str(cfg.source)] if cfg.source else []),
               "--expansion", str(cfg.expansion)],
-        mem_gb=64, cores=8,
+        mem_gb=min(64, int(cfg.node.mem_gb)), cores=min(8, cfg.node.cores),
         depends_on=(merge.job_id,) if merge.job_id else (),
     )

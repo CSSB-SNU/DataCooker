@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -10,6 +12,7 @@ import click
 from datacooker import scan_paths
 from datacooker.cli._common import coerce_path, pop_config_value, with_shard_suffix
 from datacooker.config import load_config
+from datacooker.config.runtime import activate_environment, canonical_inputs
 from datacooker.lmdb import (
     build_lmdb,
     count_lmdb_entries,
@@ -44,12 +47,14 @@ def cli() -> None:
 @click.option("--output", type=click.Path(path_type=Path), default=None,
               help="Override env_path (e.g. per tier-shard output).")
 @click.option("--n-jobs", "n_jobs", type=int, default=None,
-              help="Override worker count (per size tier); advisory under the Ray backend.")
+              help="Maximum concurrent workers, bounded by allocated CPUs.")
 @click.option("--chunk-size", "chunk_size", type=int, default=None,
               help="Results buffered before writing (default 10k lets it hoard tens of "
                    "GB and OOM); planner sets ~a few x n_jobs.")
 @click.option("--skip-existing", is_flag=True, default=False,
               help="Resume: skip keys already in the output (idempotent re-run).")
+@click.option("--ray-batch", "ray_batch", type=int, default=None,
+              help="Items per Ray task (default 1). Rarely needed; the memory gate bounds concurrency.")
 def build_command(
     config_path: Path,
     map_size: int | None,
@@ -60,15 +65,19 @@ def build_command(
     n_jobs: int | None,
     chunk_size: int | None,
     skip_existing: bool,
+    ray_batch: int | None,
 ) -> None:
     """Build an LMDB from scanned files plus a DataCooker recipe."""
     config = load_config(config_path)
+    activate_environment(config)
     if output is not None:
         config["env_path"] = output
     if n_jobs is not None:
         config["n_jobs"] = n_jobs
     if chunk_size is not None:
         config["chunk_size"] = chunk_size
+    if ray_batch is not None:
+        config["ray_batch"] = ray_batch
     if skip_existing:
         config["skip_existing"] = True
     # `keyed` is a planner-only hint (items are LMDB keys, not files); it never
@@ -97,6 +106,10 @@ def build_command(
             data_list = [Path(line.strip()) for line in handle if line.strip()]
     else:
         data_list = scan_paths(cast("Path", data_dir), pattern=file_pattern)
+    key_func = config.get("key_builder", default_lmdb_key)
+    if isinstance(key_func, str):
+        key_func = resolve_object(key_func)
+    data_list, _duplicates = canonical_inputs(data_list, key_func, config.get("duplicate_input_policy", "error"))
     if shard_idx is not None:
         if shard_idx < 0 or shard_idx >= n_shards:
             msg = f"Invalid shard index {shard_idx} for {n_shards} shards."
@@ -136,6 +149,10 @@ def build_command(
         f"skipped_existing={report.skipped_existing}, failed={report.failed})"
     )
     click.echo(f"entries={count_lmdb_entries(env_path)}")
+    report_path = Path(str(env_path) + ".build-report.json")
+    temporary = report_path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(asdict(report), indent=2))
+    temporary.replace(report_path)
 
 
 @cli.command("rebuild")
@@ -148,10 +165,12 @@ def build_command(
 @click.option("--output", type=click.Path(path_type=Path), default=None,
               help="Override new_env_path (e.g. per tier-shard output).")
 @click.option("--n-jobs", "n_jobs", type=int, default=None,
-              help="Override worker count (per size tier); advisory under the Ray backend.")
+              help="Maximum concurrent workers, bounded by allocated CPUs.")
 @click.option("--chunk-size", "chunk_size", type=int, default=None,
               help="Results buffered before writing; the 10k default lets the drain "
                    "hoard tens of GB and OOM. Planner sets ~a few x n_jobs.")
+@click.option("--ray-batch", "ray_batch", type=int, default=None,
+              help="Items per Ray task (default 1). Rarely needed; the memory gate bounds concurrency.")
 def rebuild_command(
     config_path: Path,
     map_size: int | None,
@@ -161,9 +180,11 @@ def rebuild_command(
     output: Path | None,
     n_jobs: int | None,
     chunk_size: int | None,
+    ray_batch: int | None,
 ) -> None:
     """Rebuild an LMDB through another DataCooker recipe."""
     config = load_config(config_path)
+    activate_environment(config)
     coerce_path(config, "old_env_path")
     coerce_path(config, "new_env_path")
     _normalize_recipe_alias(config)
@@ -180,6 +201,8 @@ def rebuild_command(
         config["n_jobs"] = n_jobs
     if chunk_size is not None:
         config["chunk_size"] = chunk_size
+    if ray_batch is not None:
+        config["ray_batch"] = ray_batch
 
     if shard_idx is not None:
         if shard_idx < 0 or shard_idx >= n_shards:
@@ -204,6 +227,10 @@ def rebuild_command(
         f"skipped_existing={report.skipped_existing}, failed={report.failed})"
     )
     click.echo(f"entries={count_lmdb_entries(new_env_path)}")
+    report_path = Path(str(new_env_path) + ".build-report.json")
+    temporary = report_path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(asdict(report), indent=2))
+    temporary.replace(report_path)
 
 
 @cli.command("rekey")
@@ -218,6 +245,7 @@ def rekey_command(config_path: Path, map_size: int | None) -> None:
     ``commit_every``, ``skip_existing``, ``on_duplicate``, ``append``.
     """
     config = load_config(config_path)
+    activate_environment(config)
     old_env_path = coerce_path(config, "old_env_path")
     new_env_path = coerce_path(config, "new_env_path")
     if old_env_path is None or new_env_path is None:
@@ -253,7 +281,9 @@ def rekey_command(config_path: Path, map_size: int | None) -> None:
 
 
 @cli.command("merge")
-@click.argument("shard_pattern", type=str)
+@click.argument("shard_pattern", type=str, required=False)
+@click.option("--shard-list", type=click.Path(exists=True, path_type=Path),
+              help="Exact shard paths, one per line; mutually exclusive with the glob.")
 @click.option(
     "--output",
     required=True,
@@ -281,7 +311,8 @@ def rekey_command(config_path: Path, map_size: int | None) -> None:
     help="Dotted path to a dict->bytes encoder (required for --on-duplicate union).",
 )
 def merge_command(
-    shard_pattern: str,
+    shard_pattern: str | None,
+    shard_list: Path | None,
     output: Path,
     map_size: int,
     overwrite: bool,
@@ -290,22 +321,21 @@ def merge_command(
     value_serializer: str | None,
 ) -> None:
     """Merge shard LMDBs matched by a glob pattern."""
-    pattern_path = Path(shard_pattern)
-    shard_paths = sorted(pattern_path.parent.glob(pattern_path.name))
-    # The pipeline's '{base}_*_shard*.lmdb' pattern has a greedy tier wildcard that also
-    # matches a SIBLING db whose name EXTENDS base (e.g. base 'cif_pdb_attached' vs
-    # 'cif_pdb_attached_train_..._all'): the '*' spans that db's extra '_' tokens, so its
-    # shards get merged in and clobber keys. Keep only this build's own shards -- those
-    # whose tier segment (between '{base}_' and '_shard') is a single token (no '_').
-    if "_*_shard" in pattern_path.name:
-        base = pattern_path.name.split("_*_shard", 1)[0]
-        shard_paths = [
-            p for p in shard_paths
-            if "_" not in p.name[len(base) + 1:].split("_shard", 1)[0]
-        ]
-    if not shard_paths:
-        msg = f"No LMDB files matched: {shard_pattern}"
+    if (shard_pattern is None) == (shard_list is None):
+        msg = "Provide exactly one shard glob or --shard-list."
         raise click.ClickException(msg)
+    if shard_list is not None:
+        shard_paths = [Path(line) for line in shard_list.read_text().splitlines() if line]
+        missing = [str(path) for path in shard_paths if not (path / "data.mdb").is_file()]
+        if missing:
+            msg = "Missing planned shards: " + ", ".join(missing)
+            raise click.ClickException(msg)
+    else:
+        pattern_path = Path(cast("str", shard_pattern))
+        shard_paths = sorted(pattern_path.parent.glob(pattern_path.name))
+        if not shard_paths:
+            msg = f"No LMDB files matched: {shard_pattern}"
+            raise click.ClickException(msg)
 
     deserializer = (
         resolve_object(value_deserializer) if value_deserializer else None
@@ -321,7 +351,8 @@ def merge_command(
         value_deserializer=deserializer,
         value_serializer=serializer,
     )
-    click.echo(f"merged {len(shard_paths)} shards into {output}")
+    storage = "shard_lmdb" if (output / "shards.json").is_file() else "merged LMDB"
+    click.echo(f"published {len(shard_paths)} shards as {storage}: {output}")
     click.echo(f"entries={count_lmdb_entries(output)}")
 
 
@@ -373,9 +404,9 @@ def index_command(
 @click.option("--include-keys", type=click.Path(exists=True, path_type=Path), default=None,
               help="rebuild only: restrict to this key subset (e.g. a date-scoped set)")
 @click.option("--schema", default="unknown")
-@click.option("--node-mem-gb", type=float, default=490.0)
-@click.option("--cores", type=int, default=112)
-@click.option("--n-nodes", type=int, default=8)
+@click.option("--node-mem-gb", type=click.FloatRange(min=1), default=490.0, envvar="DATACOOKER_NODE_MEM_GB")
+@click.option("--cores", type=click.IntRange(min=1), default=112, envvar="DATACOOKER_CPUS_PER_NODE")
+@click.option("--n-nodes", type=click.IntRange(min=1), default=8, envvar="DATACOOKER_MAX_NODES")
 @click.option("--repo", type=click.Path(path_type=Path), default=None)
 @click.option("--depends-on", "depends_on", default="",
               help="comma-separated upstream job ids the tier arrays afterok-wait "
@@ -400,12 +431,17 @@ def pipeline_command(
     chained. Op is inferred from the engine config (old_env_path => rebuild;
     env_path + file_list/data_dir => build).
     """
-    from datacooker.executors.slurm import SlurmExecutor
-    from datacooker.lmdb.index import ItemSize, read_index, write_index
+    from datacooker.executors.slurm import SlurmExecutor, wait_for_jobs
+    from datacooker.lmdb.index import ItemSize, measure_files, read_index, write_index
     from datacooker.pipeline import PipelineConfig, run
     from datacooker.planning import NodeSpec
 
+    deps = tuple(d.strip() for d in (depends_on or "").split(",") if d.strip())
+    if deps and not dry_run:
+        wait_for_jobs(deps)
+        deps = ()  # Completed jobs can expire from the scheduler before submission.
     raw = load_config(engine_config)
+    activate_environment(raw)
     coerce_path(raw, "old_env_path")
     coerce_path(raw, "new_env_path")
     coerce_path(raw, "env_path")
@@ -433,25 +469,37 @@ def pipeline_command(
                 sizes = [ItemSize(k, 1) for k in items]
             else:
                 paths = [Path(k) for k in items]
-                sizes = [ItemSize(str(p), p.stat().st_size) for p in paths]
+                sizes = measure_files(paths)
         else:
             files = list(scan_paths(Path(raw["data_dir"]), pattern=str(raw.get("file_pattern", "*"))))
-            sizes = [ItemSize(str(f), f.stat().st_size) for f in files]
+            click.echo(f"[planner] discovered {len(files)} files; collecting sizes")
+            sizes = measure_files(files)
     else:
         msg = "engine config needs old_env_path (rebuild) or env_path+file source (build)."
         raise click.ClickException(msg)
 
+    if op == "build":
+        key_func = raw.get("key_builder", default_lmdb_key)
+        if isinstance(key_func, str):
+            key_func = resolve_object(key_func)
+        selected, duplicates = canonical_inputs([Path(item.key) for item in sizes], key_func,
+                                                 raw.get("duplicate_input_policy", "error"))
+        keep = {str(p) for p in selected}
+        sizes = [item for item in sizes if item.key in keep]
+        Path(workdir).mkdir(parents=True, exist_ok=True)
+        (Path(workdir) / "input-selection.json").write_text(json.dumps(duplicates, indent=2))
     pcfg = PipelineConfig(
         op=op, source=source, target=target, engine_config=engine_config,
         expansion=expansion, schema=schema,
         node=NodeSpec(mem_gb=node_mem_gb, cores=cores, n_nodes=n_nodes),
+        map_size=int(raw.get("map_size", 300_000_000_000)),
     )
+    run_workdir = Path(workdir) / pcfg.run_id
     execu = SlurmExecutor(
-        workdir=Path(workdir), repo=Path(repo) if repo else Path.cwd(),
+        workdir=run_workdir, repo=Path(repo) if repo else Path.cwd(),
         submit=not dry_run,
     )
-    deps = tuple(d for d in (depends_on or "").split(",") if d.strip())
-    handle = run(pcfg, execu, keyfiles_dir=Path(workdir) / "items", sizes=sizes,
+    handle = run(pcfg, execu, keyfiles_dir=run_workdir / "items", sizes=sizes,
                  depends_on=deps)
     click.echo(f"pipeline submitted; final stage = {handle.name} ({handle.job_id})")
     # Machine-parseable terminal job id so a multi-DB driver can afterok-chain the

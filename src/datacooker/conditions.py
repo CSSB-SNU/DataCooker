@@ -16,26 +16,13 @@ from typing import Any
 
 
 def output_absent(config: dict[str, Any]) -> bool:
-    """Return True if this DB's output is not built yet (so it still needs building).
-
-    For an LMDB build/rebuild the final stage writes ``<target>.index.tsv``, so its
-    presence means the DB is fully built. For a projection op (materialize/extract) the
-    output is a plain file at ``output_data_path`` (a.k.a. ``output_path`` -- the same
-    aliases the workflow CLI accepts), so its own presence is the signal; checking it
-    **before** the LMDB target is deliberate, so an extract op is not fooled by its
-    always-present *source* index. Returning False lets the caller skip it -- this is
-    what makes a repeated ``build-all`` do only the missing work (idempotent re-run).
-
-    A **parallel** op (``split_recipe``) writes a whole directory of files with no single
-    sentinel, so it has no ``output_data_path``/target here and this returns True: it is
-    always rebuilt. That is safe (never wrongly skips) and cheap in practice because those
-    recipes (hmmsearch, a3m cleanup) skip work whose output already exists internally.
-    """
+    """Report absent outputs; refuse to infer verified completion from existing artifacts."""
     projection = config.get("output_data_path") or config.get("output_path")
-    if projection:
-        return not Path(projection).exists()
-    target = config.get("new_env_path") or config.get("env_path")
-    return not (target and Path(f"{target}.index.tsv").exists())
+    target = projection or config.get("new_env_path") or config.get("env_path")
+    if target and (Path(target).exists() or Path(f"{target}.index.tsv").exists()):
+        msg = "Output existence cannot establish completion; use the verified release receipt path"
+        raise RuntimeError(msg)
+    return True
 
 
 def always(config: dict[str, Any]) -> bool:  # noqa: ARG001
