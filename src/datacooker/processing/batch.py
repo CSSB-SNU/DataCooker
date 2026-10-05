@@ -12,7 +12,7 @@ from datacooker._parallel import iter_parallel_chunks
 from datacooker.api import parse_dict
 from datacooker.protocols import TransformFunc
 from datacooker.readers import resolve_key_transform
-from datacooker.utils.sharding import resolve_node_config, shard_items
+from datacooker.utils.sharding import resolve_node_config, shard_items_by_key
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,11 @@ def parallel_process(
     return [(item.output, item.error) for item in report.items]
 
 
+def _item_key(item: Mapping[str, Any]) -> str:
+    """Stable identity of a work item: its fields, sorted, as strings."""
+    return repr(sorted((str(k), str(v)) for k, v in item.items()))
+
+
 def parallel_process_report(
     data_list: Sequence[Mapping[str, Any]],
     *,
@@ -124,8 +129,12 @@ def parallel_process_report(
         node_count=node_count,
     )
     indexed_data_list = list(enumerate(data_list))
-    sharded_items = shard_items(
+    # By item content, not list position: nodes of an array job start at different times,
+    # and a resumable split recipe (one that leaves finished items out) then hands each node
+    # a different list -- positional striping would leave items on no node at all.
+    sharded_items = shard_items_by_key(
         indexed_data_list,
+        key_func=lambda pair: _item_key(pair[1]),
         node_rank=resolved_node_rank,
         node_count=resolved_node_count,
     )

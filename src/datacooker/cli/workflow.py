@@ -53,6 +53,7 @@ def parallel_run_command(
     node_count: int | None,
 ) -> None:
     """Expand work items with one recipe and process them with another."""
+    _require_process_semaphores()
     config = load_config(config_path)
     activate_environment(config)
     split_recipe = _pop_recipe_path(config, "split_recipe", "split_recipe_path")
@@ -193,3 +194,20 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+def _require_process_semaphores() -> None:
+    """Fail fast where worker processes cannot be created.
+
+    joblib only warns and drops to ONE serial worker when it cannot create a semaphore
+    (e.g. /dev/shm full on the node), so a fanned-out job silently runs ~100x slower.
+    """
+    import multiprocessing
+
+    try:
+        multiprocessing.Semaphore()
+    except OSError as exc:
+        msg = f"cannot create process semaphores on this node ({exc}); /dev/shm is likely full"
+        raise click.ClickException(msg) from exc
+
