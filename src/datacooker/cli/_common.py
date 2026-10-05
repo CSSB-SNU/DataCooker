@@ -48,11 +48,15 @@ def resolve_optional_int(
     config: dict[str, Any],
     candidate_keys: tuple[str, ...],
 ) -> int | None:
-    """Resolve an optional integer from CLI first, then config aliases."""
+    """Resolve an optional integer from CLI first, then config aliases.
+
+    The aliases are removed from ``config`` either way: callers pass the rest of the config
+    on as keyword arguments, next to the resolved value, and a key left behind arrives twice.
+    """
+    found = [config.pop(key) for key in candidate_keys if key in config]
     if cli_value is not None:
         return cli_value
-    for key in candidate_keys:
-        value = config.get(key)
+    for value in found:
         if value is not None:
             return int(value)
     return None

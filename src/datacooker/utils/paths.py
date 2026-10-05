@@ -16,6 +16,11 @@ def scan_paths(
 ) -> list[Path]:
     """Scan filenames recursively, or resolve a root-relative glob containing '/'.
 
+    A plain filename pattern may list alternatives separated by ``|``
+    (``name.pdb|name.pdb.zst``): a file matches if it matches any of them. That is how a
+    pattern takes two exact names without a trailing ``*``, which would also match the
+    partial files a downloader leaves behind (``name.pdb1056791784``).
+
     A structured pattern can avoid traversing unrelated intermediate directories
     in large datasets. Plain filename patterns retain recursive matching.
     """
@@ -40,6 +45,7 @@ def scan_paths(
                 return paths
         return [path for path in root.glob(pattern) if path.is_file()]
     matches: list[Path] = []
+    alternatives = pattern.split("|")
 
     def _scan(directory: Path) -> None:
         with os.scandir(directory) as entries:
@@ -47,7 +53,7 @@ def scan_paths(
                 entry_path = Path(entry.path)
                 if entry.is_dir(follow_symlinks=False):
                     _scan(entry_path)
-                elif fnmatch.fnmatch(entry.name, pattern):
+                elif any(fnmatch.fnmatch(entry.name, alt) for alt in alternatives):
                     matches.append(entry_path)
 
     _scan(root)

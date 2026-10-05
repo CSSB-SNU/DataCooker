@@ -33,3 +33,13 @@ class PathScanTests(TestCase):
             self.assertEqual(measure_files([]), [])
             with self.assertRaises(FileNotFoundError):
                 measure_files([root / "missing"])
+
+
+def test_plain_pattern_alternatives_exclude_downloader_partials(tmp_path):
+    from datacooker.utils.paths import scan_paths
+
+    for name in ("a/model.pdb", "b/model.pdb.zst", "c/model.pdb1056791784", "c/other.txt"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("x")
+    found = sorted(p.relative_to(tmp_path).as_posix() for p in scan_paths(tmp_path, pattern="model.pdb|model.pdb.zst"))
+    assert found == ["a/model.pdb", "b/model.pdb.zst"]

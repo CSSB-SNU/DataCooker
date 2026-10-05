@@ -84,3 +84,14 @@ def test_parallel_run_body_resolves_its_helpers_when_run_as_module(tmp_path):
         capture_output=True, text=True, check=False,
     )
     assert "NameError" not in result.stderr
+
+
+def test_node_keys_in_config_do_not_reach_the_runner_twice():
+    from datacooker.cli._common import resolve_optional_int
+
+    config = {"node_count": 8, "n_jobs": -1}
+    assert resolve_optional_int(3, config, ("node_count", "world_size")) == 3
+    assert "node_count" not in config
+    config = {"world_size": 4}
+    assert resolve_optional_int(None, config, ("node_count", "world_size")) == 4
+    assert config == {}
