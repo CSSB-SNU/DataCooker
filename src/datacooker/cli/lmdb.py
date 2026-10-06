@@ -280,6 +280,12 @@ def rekey_command(config_path: Path, map_size: int | None) -> None:
     click.echo(f"entries={count_lmdb_entries(new_env_path)}")
 
 
+def required_map_size(shard_paths: list[Path], headroom: float = 1.25) -> int:
+    """Map size a merge of ``shard_paths`` needs: their data files' total size plus headroom."""
+    total = sum((Path(p) / "data.mdb").stat().st_size for p in shard_paths if (Path(p) / "data.mdb").is_file())
+    return int(total * headroom)
+
+
 @cli.command("merge")
 @click.argument("shard_pattern", type=str, required=False)
 @click.option("--shard-list", type=click.Path(exists=True, path_type=Path),
@@ -342,6 +348,8 @@ def merge_command(
     )
     serializer = resolve_object(value_serializer) if value_serializer else None
 
+    # The map is a ceiling, not an allocation: never below what the shards already hold.
+    map_size = max(map_size, required_map_size(shard_paths))
     merge_lmdb_shards(
         shard_paths,
         output,

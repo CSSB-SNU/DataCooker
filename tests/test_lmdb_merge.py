@@ -43,3 +43,12 @@ class MergeLmdbTests(unittest.TestCase):
                                   overwrite=True, map_size=10000000)
             self.assertEqual(_read_lmdb(dest), {b"z": b"original"})
             self.assertEqual(_read_lmdb(source), {b"a": b"first"})
+
+
+def test_merge_map_size_never_below_the_shards(tmp_path):
+    from datacooker.cli.lmdb import required_map_size
+
+    for i, n in enumerate((1000, 3000)):
+        (tmp_path / f"s{i}").mkdir()
+        (tmp_path / f"s{i}" / "data.mdb").write_bytes(b"x" * n)
+    assert required_map_size([tmp_path / "s0", tmp_path / "s1"]) == 5000
