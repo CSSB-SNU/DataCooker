@@ -95,3 +95,21 @@ def test_node_keys_in_config_do_not_reach_the_runner_twice():
     config = {"world_size": 4}
     assert resolve_optional_int(None, config, ("node_count", "world_size")) == 4
     assert config == {}
+
+
+def test_smoke_sample_stats_a_bounded_number_of_paths(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from datacooker import _parallel
+
+    files = []
+    for i in range(50):
+        f = tmp_path / f"f{i}"
+        f.write_bytes(b"x" * (100 - i))
+        files.append(str(f))
+    calls = []
+    real = Path.stat
+    monkeypatch.setattr(Path, "stat", lambda self, *a, **k: (calls.append(self), real(self, *a, **k))[1])
+    monkeypatch.setattr(_parallel, "_SMOKE_STAT_SAMPLE", 10)
+    picked = _parallel._smoke_sample(files, 2)
+    assert len(calls) <= 10 and len(picked) == 2

@@ -14,10 +14,13 @@ logger = logging.getLogger(__name__)
 _SERIAL_TEST_SAMPLE = 10
 
 
+_SMOKE_STAT_SAMPLE = 2000
+
+
 def _smoke_sample(items: Sequence[Any], n: int) -> list[Any]:
     """Pick <= ``n`` items to smoke-test serially before the parallel run.
 
-    For file-path items prefer the SMALLEST by size: planners sort a build's items
+    For file-path items prefer the SMALLEST by size (among ~2,000 evenly spread items): planners sort a build's items
     largest-first (bin-packing), so ``items[:n]`` would serially process the biggest
     structures on a single core -- and the parallel run then reprocesses them -- which
     for a DB like pdb/cif means grinding the 500 MB / high-expansion records twice. A
@@ -27,8 +30,11 @@ def _smoke_sample(items: Sequence[Any], n: int) -> list[Any]:
     """
     if len(items) <= n:
         return list(items)
+    # Stat an evenly spread sample, not every item: on a shared filesystem a stat per path
+    # of a 1.6M-item build took hours before any work started.
+    step = max(1, len(items) // _SMOKE_STAT_SAMPLE)
     try:
-        sized = [(Path(item).stat().st_size, idx) for idx, item in enumerate(items)]
+        sized = [(Path(items[idx]).stat().st_size, idx) for idx in range(0, len(items), step)]
     except (OSError, TypeError, ValueError):
         # A non-path item (e.g. an LMDB key) -- keep original order.
         return list(items[:n])
