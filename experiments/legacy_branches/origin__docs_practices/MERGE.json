@@ -1,0 +1,27 @@
+{
+  "ref": "origin/docs_practices",
+  "tip": "ec849cc5b3c62535d133044d7c7f7a2bd1bd1ad8",
+  "merge_base": "8f60afcbc6d6a0ab4c07b02a26a2d972f934389a",
+  "current": "dc3104d7be6d25f9e7bb8df731e3724e927f818d",
+  "reason": "Superseded implementation or machine-specific cache. Preserve branch contents and ancestry without rolling back the current APIs or validated fixes.",
+  "files": [
+    {
+      "status": "A",
+      "path": "docs_src/assets/ccd_datacooker.drawio.png",
+      "sha256": "c25df65b43793fdea9cee071c022e7f45182352850a60e2dafe9a49fac7184e5",
+      "resolution": "historical file preserved here; current implementation retained"
+    },
+    {
+      "status": "M",
+      "path": "docs_src/tutorials.md",
+      "sha256": "a81fd92e2fe5266d5b1dcf37bead3e10da98af2107b8b2df23c4fb105231d9b0",
+      "resolution": "historical file preserved here; current implementation retained"
+    },
+    {
+      "status": "A",
+      "path": "docs_src/tutorials/make_recipe_basic.md",
+      "sha256": "f062d441179b3bb5d20ce4289015ebbdec9486c790f432d89bcaea44b7e74e16",
+      "resolution": "historical file preserved here; current implementation retained"
+    }
+  ]
+}
