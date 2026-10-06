@@ -76,3 +76,18 @@ def test_patch_replaces_and_adds_in_single_and_sharded_dbs(tmp_path):
     assert patch_lmdb(tmp_path / "coll", tmp_path / "p2")["entries"] == 4
     with open_env(tmp_path / "coll", readonly=True, lock=False) as env, env.begin() as t:
         assert t.get(b"a") == b"new" and t.get(b"c") == b"added" and t.get(b"d") == b"keep"
+
+
+def test_patch_takes_several_patch_lmdbs(tmp_path):
+    import lmdb
+    from datacooker.lmdb.sharded import patch_lmdb
+
+    def make(path, items):
+        with lmdb.open(str(path), map_size=1 << 24) as env, env.begin(write=True) as t:
+            for k, v in items.items():
+                t.put(k.encode(), v.encode())
+
+    make(tmp_path / "db", {"a": "old", "b": "keep"})
+    make(tmp_path / "p0", {"a": "new"})
+    make(tmp_path / "p1", {"c": "added"})
+    assert patch_lmdb(tmp_path / "db", [tmp_path / "p0", tmp_path / "p1"])["entries"] == 3

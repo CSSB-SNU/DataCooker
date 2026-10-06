@@ -283,13 +283,13 @@ def rekey_command(config_path: Path, map_size: int | None) -> None:
 @cli.command("patch")
 @click.option("--target", type=click.Path(exists=True, path_type=Path), required=True,
               help="Published LMDB (single or shard collection) to patch.")
-@click.option("--patch", "patch_path", type=click.Path(exists=True, path_type=Path), required=True,
-              help="LMDB holding the replacement/new records.")
-def patch_command(target: Path, patch_path: Path) -> None:
+@click.option("--patch", "patch_paths", type=click.Path(exists=True, path_type=Path), required=True,
+              multiple=True, help="LMDB(s) holding the replacement/new records (repeatable).")
+def patch_command(target: Path, patch_paths: tuple[Path, ...]) -> None:
     """Replace or add one LMDB's records in a published DB (then re-run `index`)."""
     from datacooker.lmdb.sharded import patch_lmdb
 
-    counts = patch_lmdb(target, patch_path)
+    counts = patch_lmdb(target, list(patch_paths))
     click.echo("patched " + " ".join(f"{k}={v}" for k, v in counts.items()) + f": {target}")
 
 
