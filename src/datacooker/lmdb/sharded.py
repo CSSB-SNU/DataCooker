@@ -177,3 +177,31 @@ def publish_shards(paths: list[Path], target: Path, *, overwrite: bool = False) 
         os.fsync(handle.fileno())
     temporary.replace(target / MANIFEST)
     return checked
+
+
+def patch_lmdb(target: str | Path, patch: str | Path) -> dict[str, int]:
+    """Replace or add ``patch``'s records in ``target``; return counts.
+
+    For records that were built wrong, or not at all, when rebuilding the whole DB is not
+    worth it. A shard collection drops the patched keys from its shards and gains ``patch``
+    as one more immutable shard; a single LMDB takes the patch values in place.
+    """
+    target, patch = Path(target).resolve(), Path(patch).resolve()
+    with lmdb.open(str(patch), readonly=True, lock=False) as penv, penv.begin() as ptxn:
+        keys = [bytes(k) for k in ptxn.cursor().iternext(values=False)]
+        if (target / MANIFEST).is_file():
+            shards = shard_paths(target)
+            removed = 0
+            for path in shards:
+                with lmdb.open(str(path), lock=True, map_size=1 << 40) as env, env.begin(write=True) as txn:
+                    removed += sum(bool(txn.delete(k)) for k in keys)
+            entries = publish_shards([*shards, patch], target, overwrite=True)
+            return {"patched": len(keys), "replaced": removed, "added": len(keys) - removed, "entries": entries}
+        size = (target / "data.mdb").stat().st_size + (patch / "data.mdb").stat().st_size
+        with lmdb.open(str(target), map_size=max(1 << 30, int(size * 1.25))) as env, env.begin(write=True) as txn:
+            replaced = sum(txn.get(k) is not None for k in keys)
+            for k in keys:
+                txn.put(k, ptxn.get(k))
+            entries = txn.stat()["entries"]
+    return {"patched": len(keys), "replaced": replaced, "added": len(keys) - replaced, "entries": entries}
+

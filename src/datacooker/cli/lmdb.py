@@ -280,6 +280,19 @@ def rekey_command(config_path: Path, map_size: int | None) -> None:
     click.echo(f"entries={count_lmdb_entries(new_env_path)}")
 
 
+@cli.command("patch")
+@click.option("--target", type=click.Path(exists=True, path_type=Path), required=True,
+              help="Published LMDB (single or shard collection) to patch.")
+@click.option("--patch", "patch_path", type=click.Path(exists=True, path_type=Path), required=True,
+              help="LMDB holding the replacement/new records.")
+def patch_command(target: Path, patch_path: Path) -> None:
+    """Replace or add one LMDB's records in a published DB (then re-run `index`)."""
+    from datacooker.lmdb.sharded import patch_lmdb
+
+    counts = patch_lmdb(target, patch_path)
+    click.echo("patched " + " ".join(f"{k}={v}" for k, v in counts.items()) + f": {target}")
+
+
 def required_map_size(shard_paths: list[Path], headroom: float = 1.25) -> int:
     """Map size a merge of ``shard_paths`` needs: their data files' total size plus headroom."""
     total = sum((Path(p) / "data.mdb").stat().st_size for p in shard_paths if (Path(p) / "data.mdb").is_file())

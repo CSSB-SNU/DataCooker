@@ -52,3 +52,27 @@ def test_merge_map_size_never_below_the_shards(tmp_path):
         (tmp_path / f"s{i}").mkdir()
         (tmp_path / f"s{i}" / "data.mdb").write_bytes(b"x" * n)
     assert required_map_size([tmp_path / "s0", tmp_path / "s1"]) == 5000
+
+
+def test_patch_replaces_and_adds_in_single_and_sharded_dbs(tmp_path):
+    import lmdb
+    from datacooker.lmdb.sharded import patch_lmdb, publish_shards, open_env
+
+    def make(path, items):
+        with lmdb.open(str(path), map_size=1 << 24) as env, env.begin(write=True) as t:
+            for k, v in items.items():
+                t.put(k.encode(), v.encode())
+
+    make(tmp_path / "single", {"a": "old", "b": "keep"})
+    make(tmp_path / "p1", {"a": "new", "c": "added"})
+    assert patch_lmdb(tmp_path / "single", tmp_path / "p1") == {"patched": 2, "replaced": 1, "added": 1, "entries": 3}
+    with lmdb.open(str(tmp_path / "single"), readonly=True, lock=False) as env, env.begin() as t:
+        assert t.get(b"a") == b"new" and t.get(b"b") == b"keep" and t.get(b"c") == b"added"
+
+    make(tmp_path / "s0", {"a": "old", "b": "keep"})
+    make(tmp_path / "s1", {"d": "keep"})
+    publish_shards([tmp_path / "s0", tmp_path / "s1"], tmp_path / "coll")
+    make(tmp_path / "p2", {"a": "new", "c": "added"})
+    assert patch_lmdb(tmp_path / "coll", tmp_path / "p2")["entries"] == 4
+    with open_env(tmp_path / "coll", readonly=True, lock=False) as env, env.begin() as t:
+        assert t.get(b"a") == b"new" and t.get(b"c") == b"added" and t.get(b"d") == b"keep"
