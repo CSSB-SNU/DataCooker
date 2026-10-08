@@ -213,3 +213,25 @@ def patch_lmdb(target: str | Path, patches: str | Path | list[str | Path]) -> di
             entries = txn.stat()["entries"]
     return {"patched": len(keys), "replaced": replaced, "added": len(keys) - replaced, "entries": entries}
 
+
+def update_index_after_patch(target: str | Path, patches: list[str | Path]) -> bool:
+    """Rewrite ``target``'s index from its old rows plus the patches' sizes.
+
+    Re-indexing a multi-TB DB reads every value (hours, and it ran a node out of memory);
+    only the patched keys changed. Returns False when there is no old index to update.
+    """
+    from datacooker.lmdb.index import (
+        has_index,
+        read_index,
+        scan_sizes,
+        write_index,
+    )
+
+    if not has_index(target):
+        return False
+    new = {s.key: s for p in patches for s in scan_sizes(p)}
+    old = read_index(target)
+    seen = {s.key for s in old}
+    write_index(target, [new.get(s.key, s) for s in old] + [s for k, s in new.items() if k not in seen])
+    return True
+

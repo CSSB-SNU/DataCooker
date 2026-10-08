@@ -91,3 +91,22 @@ def test_patch_takes_several_patch_lmdbs(tmp_path):
     make(tmp_path / "p0", {"a": "new"})
     make(tmp_path / "p1", {"c": "added"})
     assert patch_lmdb(tmp_path / "db", [tmp_path / "p0", tmp_path / "p1"])["entries"] == 3
+
+
+def test_patch_updates_an_existing_index_incrementally(tmp_path):
+    import lmdb
+    from datacooker.lmdb.index import read_index, write_index, scan_sizes
+    from datacooker.lmdb.sharded import patch_lmdb, update_index_after_patch
+
+    def make(path, items):
+        with lmdb.open(str(path), map_size=1 << 24) as env, env.begin(write=True) as t:
+            for k, v in items.items():
+                t.put(k.encode(), v.encode())
+
+    make(tmp_path / "db", {"a": "x" * 10, "b": "y" * 20})
+    write_index(tmp_path / "db", scan_sizes(tmp_path / "db"))
+    make(tmp_path / "p", {"a": "z" * 30, "c": "w" * 5})
+    patch_lmdb(tmp_path / "db", tmp_path / "p")
+    assert update_index_after_patch(tmp_path / "db", [tmp_path / "p"])
+    assert {s.key: s.value_bytes for s in read_index(tmp_path / "db")} == \
+        {s.key: s.value_bytes for s in scan_sizes(tmp_path / "db")}

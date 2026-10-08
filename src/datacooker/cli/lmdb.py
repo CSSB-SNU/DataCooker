@@ -287,10 +287,14 @@ def rekey_command(config_path: Path, map_size: int | None) -> None:
               multiple=True, help="LMDB(s) holding the replacement/new records (repeatable).")
 def patch_command(target: Path, patch_paths: tuple[Path, ...]) -> None:
     """Replace or add one LMDB's records in a published DB (then re-run `index`)."""
-    from datacooker.lmdb.sharded import patch_lmdb
+    from datacooker.lmdb.sharded import patch_lmdb, update_index_after_patch
 
     counts = patch_lmdb(target, list(patch_paths))
     click.echo("patched " + " ".join(f"{k}={v}" for k, v in counts.items()) + f": {target}")
+    if update_index_after_patch(target, list(patch_paths)):
+        click.echo(f"index updated for the patched keys: {target}")
+    else:
+        click.echo("no existing index; run `index` to write one")
 
 
 def required_map_size(shard_paths: list[Path], headroom: float = 1.25) -> int:
