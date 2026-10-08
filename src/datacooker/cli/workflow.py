@@ -26,6 +26,7 @@ def run_command(config_path: Path) -> None:
     """Run a recipe against prepared inputs and optionally project the result."""
     config = load_config(config_path)
     activate_environment(config)
+    config.pop("runtime_environment", None)   # applied to os.environ, not a recipe argument
     recipe = _pop_recipe_path(config, "recipe", "recipe_path")
     inputs = _pop_inputs(config)
     output_path = _pop_optional_path(config, "output_path", "output_data_path")
@@ -56,6 +57,7 @@ def parallel_run_command(
     _require_process_semaphores()
     config = load_config(config_path)
     activate_environment(config)
+    config.pop("runtime_environment", None)   # applied to os.environ, not a recipe argument
     split_recipe = _pop_recipe_path(config, "split_recipe", "split_recipe_path")
     recipe = _pop_recipe_path(config, "recipe", "recipe_path")
     inputs = _pop_inputs(config)
@@ -94,6 +96,7 @@ def extract_lmdb_command(config_path: Path) -> None:
     """Extract recipe outputs from all LMDB records."""
     config = load_config(config_path)
     activate_environment(config)
+    config.pop("runtime_environment", None)   # applied to os.environ, not a recipe argument
     env_path = _pop_path(config, "env_path", "db_path")
     recipe = _pop_recipe_path(config, "extract_recipe", "extract_recipe_path", "recipe")
     output_path = _pop_optional_path(config, "output_path", "output_data_path")
