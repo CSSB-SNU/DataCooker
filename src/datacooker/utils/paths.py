@@ -8,6 +8,9 @@ from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 from pathlib import Path
 
+# Concurrent directory listings for a recursive scan (DATACOOKER_SCAN_THREADS).
+SCAN_THREADS = int(os.environ.get("DATACOOKER_SCAN_THREADS", "64"))
+
 
 def scan_paths(
     root: Path,
@@ -44,17 +47,30 @@ def scan_paths(
                         paths.extend(matches)
                 return paths
         return [path for path in root.glob(pattern) if path.is_file()]
-    matches: list[Path] = []
     alternatives = pattern.split("|")
 
-    def _scan(directory: Path) -> None:
+    def _scan(directory: str) -> tuple[list[str], list[str]]:
+        files: list[str] = []
+        subdirs: list[str] = []
         with os.scandir(directory) as entries:
             for entry in entries:
-                entry_path = Path(entry.path)
                 if entry.is_dir(follow_symlinks=False):
-                    _scan(entry_path)
+                    subdirs.append(entry.path)
                 elif any(fnmatch.fnmatch(entry.name, alt) for alt in alternatives):
-                    matches.append(entry_path)
+                    files.append(entry.path)
+        return files, subdirs
 
-    _scan(root)
-    return matches
+    # Level by level, each directory listed on a thread: on a network filesystem a
+    # listing is a round trip, and a serial walk of a 16M-directory tree (OpenFold long
+    # raw/) takes ~60 h against ~1 h at 64 in flight. Sorted, so the result does not
+    # depend on listing order.
+    matches: list[str] = []
+    frontier = [str(root)]
+    with ThreadPoolExecutor(max_workers=SCAN_THREADS) as pool:
+        while frontier:
+            following: list[str] = []
+            for files, subdirs in pool.map(_scan, frontier, chunksize=64):
+                matches.extend(files)
+                following.extend(subdirs)
+            frontier = following
+    return [Path(p) for p in sorted(matches)]

@@ -43,3 +43,16 @@ def test_plain_pattern_alternatives_exclude_downloader_partials(tmp_path):
         (tmp_path / name).write_text("x")
     found = sorted(p.relative_to(tmp_path).as_posix() for p in scan_paths(tmp_path, pattern="model.pdb|model.pdb.zst"))
     assert found == ["a/model.pdb", "b/model.pdb.zst"]
+
+
+def test_recursive_scan_is_sorted_and_complete(tmp_path):
+    from datacooker.utils.paths import scan_paths
+
+    names = [f"{i:03d}/{j}/x.npz" for i in range(40) for j in ("b", "a")] + ["top.npz", "deep/1/2/3/x.npz"]
+    for name in names:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text("x")
+    (tmp_path / "001" / "a" / "skip.txt").write_text("x")
+    found = scan_paths(tmp_path, pattern="*.npz")
+    assert found == sorted(tmp_path / n for n in names)
+    assert scan_paths(tmp_path / "001", pattern="*.npz") == [tmp_path / "001/a/x.npz", tmp_path / "001/b/x.npz"]
