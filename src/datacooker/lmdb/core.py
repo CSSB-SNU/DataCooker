@@ -75,6 +75,18 @@ def extract_lmdb_keys(env_path: Path) -> list[str]:
         env.close()
 
 
+def present_lmdb_keys(env_path: Path, keys: Sequence[str]) -> list[str]:
+    """Those of ``keys`` the LMDB (or shard collection) holds, in the given order."""
+    if not Path(env_path).exists():
+        return []
+    env = open_env(str(env_path), readonly=True, lock=False)
+    try:
+        with env.begin() as txn:
+            return [key for key in keys if txn.get(key.encode()) is not None]
+    finally:
+        env.close()
+
+
 def count_lmdb_entries(env_path: Path) -> int:
     """Count entries in an LMDB database."""
     if not env_path.exists():
@@ -512,7 +524,6 @@ def rebuild_lmdb(
         )
         parameter_dict = dict(parameters or {})
 
-        old_keys = extract_lmdb_keys(old_env_path)
         if key_list is not None:
             # Process only an explicit key set (e.g. a size tier's key-list), instead
             # of a hash slice -- lets giants run in their own low-concurrency lane.
@@ -521,7 +532,14 @@ def rebuild_lmdb(
                     wanted = {ln.strip() for ln in f if ln.strip()}
             else:
                 wanted = {str(k) for k in key_list}
-            old_keys = [k for k in old_keys if k in wanted]
+            # Look the keys up rather than list the source: listing a 16M-key shard
+            # collection pages through terabytes (~1 h on GPFS) to patch 14 records.
+            old_keys = present_lmdb_keys(old_env_path, sorted(wanted))
+            if len(old_keys) != len(wanted):
+                logger.warning("%d of %d listed keys are not in %s.",
+                               len(wanted) - len(old_keys), len(wanted), old_env_path)
+        else:
+            old_keys = extract_lmdb_keys(old_env_path)
         if shard_idx is not None:
             old_keys = shard_items_by_key(
                 old_keys,

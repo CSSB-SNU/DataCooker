@@ -165,8 +165,13 @@ def publish_shards(paths: list[Path], target: Path, *, overwrite: bool = False) 
         if checked != sum(counts):
             msg = "Shard count changed during publication"
             raise ValueError(msg)
+    _write_manifest(target, paths, counts)
+    return checked
+
+
+def _write_manifest(target: Path, paths: list[Path], counts: list[int]) -> None:
     target.mkdir(parents=True, exist_ok=True)
-    descriptor = {"format": "shard_lmdb", "version": 1, "entries": checked,
+    descriptor = {"format": "shard_lmdb", "version": 1, "entries": sum(counts),
                   "merge_limit": MERGE_LIMIT,
                   "shards": [{"path": os.path.relpath(p, target), "entries": n}
                              for p, n in zip(paths, counts, strict=True)]}
@@ -176,7 +181,6 @@ def publish_shards(paths: list[Path], target: Path, *, overwrite: bool = False) 
         handle.flush()
         os.fsync(handle.fileno())
     temporary.replace(target / MANIFEST)
-    return checked
 
 
 def patch_lmdb(target: str | Path, patches: str | Path | list[str | Path]) -> dict[str, int]:
@@ -196,13 +200,27 @@ def patch_lmdb(target: str | Path, patches: str | Path | list[str | Path]) -> di
             msg = "Patch LMDBs share keys"
             raise ValueError(msg)
         if (target / MANIFEST).is_file():
-            shards = shard_paths(target)
+            shards = [p.resolve() for p in shard_paths(target)]
+            if set(plist) & set(shards):
+                msg = "A patch is already one of the target's shards"
+                raise ValueError(msg)
             removed = 0
             for path in shards:
                 with lmdb.open(str(path), lock=True, map_size=1 << 40) as env, env.begin(write=True) as txn:
                     removed += sum(bool(txn.delete(k)) for k in keys)
-            entries = publish_shards([*shards, *plist], target, overwrite=True)
-            return {"patched": len(keys), "replaced": removed, "added": len(keys) - removed, "entries": entries}
+            # The published shards already hold unique keys and none of the patch keys any
+            # more, so republishing needs counts and a look-up of the patch keys -- not a
+            # walk of every key (16M keys, an hour on GPFS, to patch 14 records).
+            counts = []
+            for path in shards:
+                with lmdb.open(str(path), readonly=True, lock=False) as env, env.begin() as txn:
+                    if any(txn.get(k) is not None for k in keys):
+                        msg = f"Patched key still present in {path}"
+                        raise ValueError(msg)
+                    counts.append(txn.stat()["entries"])
+            counts += [t.stat()["entries"] for t in ptxns]
+            _write_manifest(target, [*shards, *plist], counts)
+            return {"patched": len(keys), "replaced": removed, "added": len(keys) - removed, "entries": sum(counts)}
         size = (target / "data.mdb").stat().st_size + sum((p / "data.mdb").stat().st_size for p in plist)
         with lmdb.open(str(target), map_size=max(1 << 30, int(size * 1.25))) as env, env.begin(write=True) as txn:
             replaced = 0

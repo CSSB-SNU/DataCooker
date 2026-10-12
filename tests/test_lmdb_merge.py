@@ -110,3 +110,25 @@ def test_patch_updates_an_existing_index_incrementally(tmp_path):
     assert update_index_after_patch(tmp_path / "db", [tmp_path / "p"])
     assert {s.key: s.value_bytes for s in read_index(tmp_path / "db")} == \
         {s.key: s.value_bytes for s in scan_sizes(tmp_path / "db")}
+
+
+def test_patching_a_shard_collection_does_not_walk_its_keys(tmp_path, monkeypatch):
+    import json
+
+    import lmdb
+    from datacooker.lmdb import sharded
+
+    def make(path, items):
+        with lmdb.open(str(path), map_size=1 << 24) as env, env.begin(write=True) as t:
+            for k, v in items.items():
+                t.put(k.encode(), v.encode())
+
+    make(tmp_path / "s0", {"a": "old", "b": "keep"})
+    make(tmp_path / "s1", {"d": "keep"})
+    sharded.publish_shards([tmp_path / "s0", tmp_path / "s1"], tmp_path / "coll")
+    make(tmp_path / "p", {"a": "new", "c": "added"})
+    monkeypatch.setattr(sharded, "ShardCursor", lambda *_: (_ for _ in ()).throw(AssertionError("walked")))
+    assert sharded.patch_lmdb(tmp_path / "coll", tmp_path / "p") == {"patched": 2, "replaced": 1, "added": 1, "entries": 4}
+    manifest = json.loads((tmp_path / "coll" / sharded.MANIFEST).read_text())
+    assert manifest["entries"] == 4
+    assert [s["entries"] for s in manifest["shards"]] == [1, 1, 2]
