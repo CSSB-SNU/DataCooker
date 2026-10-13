@@ -31,6 +31,15 @@ if TYPE_CHECKING:
     from datacooker.lmdb.core import DuplicatePolicy
 
 
+
+def resolve_listed(line: str, base: str | Path | None) -> Path:
+    """A file-list line: absolute as written, or relative to the config's ``data_dir``.
+
+    Relative lists keep a work list valid when the tree it names is moved or renamed.
+    """
+    path = Path(line)
+    return path if path.is_absolute() or base is None else Path(base) / path
+
 @click.group()
 def cli() -> None:
     """Run reusable LMDB workflows from declarative config files."""
@@ -93,7 +102,8 @@ def build_command(
         data_dir = Path(pop_config_value(config, "data_dir"))
         file_pattern = str(pop_config_value(config, "file_pattern", default="*"))
     else:
-        pop_config_value(config, "data_dir", default=None)
+        # With a file list, data_dir (optional) is the base its relative lines resolve against.
+        listed_base = pop_config_value(config, "data_dir", default=None)
         pop_config_value(config, "file_pattern", default=None)
     coerce_path(config, "env_path")
     _normalize_recipe_alias(config)
@@ -103,7 +113,7 @@ def build_command(
 
     if file_list is not None:
         with Path(file_list).open() as handle:
-            data_list = [Path(line.strip()) for line in handle if line.strip()]
+            data_list = [resolve_listed(line.strip(), listed_base) for line in handle if line.strip()]
     else:
         data_list = scan_paths(cast("Path", data_dir), pattern=file_pattern)
     key_func = config.get("key_builder", default_lmdb_key)
@@ -493,7 +503,7 @@ def pipeline_command(
                 # count (template Phase 3/4). Closes the key-list sizing gap.
                 sizes = [ItemSize(k, 1) for k in items]
             else:
-                paths = [Path(k) for k in items]
+                paths = [resolve_listed(k, raw.get("data_dir")) for k in items]
                 sizes = measure_files(paths)
         else:
             files = list(scan_paths(Path(raw["data_dir"]), pattern=str(raw.get("file_pattern", "*"))))

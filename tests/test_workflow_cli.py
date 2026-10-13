@@ -28,3 +28,11 @@ def test_run_applies_runtime_environment_and_hides_it_from_the_recipe(tmp_path, 
     assert result.exit_code == 0, result.output
     assert "runtime_environment" not in seen
     assert os.environ["DC_TEST_REFERENCE"] == "pinned"
+
+
+def test_file_list_lines_resolve_against_data_dir(tmp_path):
+    from datacooker.cli.lmdb import resolve_listed
+
+    assert resolve_listed("a/b.npz", tmp_path) == tmp_path / "a/b.npz"
+    assert resolve_listed("/abs/c.npz", tmp_path) == tmp_path.anchor / __import__("pathlib").Path("abs/c.npz")
+    assert str(resolve_listed("a/b.npz", None)) == "a/b.npz"
