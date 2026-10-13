@@ -103,11 +103,16 @@ def test_patch_updates_an_existing_index_incrementally(tmp_path):
             for k, v in items.items():
                 t.put(k.encode(), v.encode())
 
+    from datacooker.lmdb.index import DbMeta, read_meta, write_meta
+
     make(tmp_path / "db", {"a": "x" * 10, "b": "y" * 20})
     write_index(tmp_path / "db", scan_sizes(tmp_path / "db"))
+    write_meta(tmp_path / "db", DbMeta(schema="E", entries=2, total_bytes=30, max_bytes=20))
     make(tmp_path / "p", {"a": "z" * 30, "c": "w" * 5})
     patch_lmdb(tmp_path / "db", tmp_path / "p")
     assert update_index_after_patch(tmp_path / "db", [tmp_path / "p"])
+    meta = read_meta(tmp_path / "db")
+    assert (meta.schema, meta.entries, meta.total_bytes, meta.max_bytes) == ("E", 3, 55, 30)
     assert {s.key: s.value_bytes for s in read_index(tmp_path / "db")} == \
         {s.key: s.value_bytes for s in scan_sizes(tmp_path / "db")}
 

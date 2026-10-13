@@ -238,11 +238,15 @@ def update_index_after_patch(target: str | Path, patches: list[str | Path]) -> b
     Re-indexing a multi-TB DB reads every value (hours, and it ran a node out of memory);
     only the patched keys changed. Returns False when there is no old index to update.
     """
+    from dataclasses import replace
+
     from datacooker.lmdb.index import (
         has_index,
         read_index,
+        read_meta,
         scan_sizes,
         write_index,
+        write_meta,
     )
 
     if not has_index(target):
@@ -250,6 +254,11 @@ def update_index_after_patch(target: str | Path, patches: list[str | Path]) -> b
     new = {s.key: s for p in patches for s in scan_sizes(p)}
     old = read_index(target)
     seen = {s.key for s in old}
-    write_index(target, [new.get(s.key, s) for s in old] + [s for k, s in new.items() if k not in seen])
+    stats = write_index(target, [new.get(s.key, s) for s in old] + [s for k, s in new.items() if k not in seen])
+    # The descriptor's counts describe the same records as the index.
+    meta = read_meta(target)
+    if meta is not None:
+        write_meta(target, replace(meta, entries=stats.entries, total_bytes=stats.total_bytes,
+                                   max_bytes=stats.max_bytes))
     return True
 
