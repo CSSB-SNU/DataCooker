@@ -11,7 +11,7 @@ import os
 import shlex
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from datacooker.executors.base import TaskHandle
@@ -23,11 +23,12 @@ class SlurmExecutor:
 
     workdir: Path                       # scratch for manifests, scripts, logs
     repo: Path                          # cwd + pixi manifest root
-    # cpu-long-q is the only uncapped cpu QOS (GrpTRES node=0 = unlimited);
-    # cpu-standard-q is throttled to ~3-4 nodes, which needlessly serialized an
-    # 8-shard array into 2 waves. cpu-long's 30-day limit is a non-issue for builds.
-    partition: str = "cpu-long"
-    qos: str = "cpu-long-q"
+    # Partition and QOS come from DATACOOKER_PARTITION / DATACOOKER_QOS. The defaults are the
+    # CSSB cluster's: cpu-long-q is its only uncapped cpu QOS (cpu-standard-q is throttled to
+    # ~3-4 nodes, which serialized an 8-shard array into 2 waves). Nodes to avoid go in
+    # DATACOOKER_EXCLUDE_NODES (e.g. ones whose /dev/shm cannot hold joblib's semaphores).
+    partition: str = field(default_factory=lambda: os.environ.get("DATACOOKER_PARTITION", "cpu-long"))
+    qos: str = field(default_factory=lambda: os.environ.get("DATACOOKER_QOS", "cpu-long-q"))
     log_dir: Path | None = None
     pixi_manifest: Path | None = None   # defaults to repo/pyproject.toml
     submit: bool = True                 # False -> dry run (write scripts, no sbatch)
