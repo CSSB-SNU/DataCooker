@@ -46,3 +46,19 @@ class RayExecutionTests(unittest.TestCase):
             for _, delta in sorted(events):
                 active += delta
                 self.assertLessEqual(active, 2)
+
+
+def test_admission_start_is_one_unless_the_environment_widens_it(monkeypatch):
+    from datacooker._ray import Admission, _start_target
+
+    monkeypatch.delenv("DATACOOKER_ADMISSION_START", raising=False)
+    assert _start_target(112) == 1
+    monkeypatch.setenv("DATACOOKER_ADMISSION_START", "32")
+    assert _start_target(112) == 32
+    assert _start_target(16) == 16  # never above the CPU limit
+    monkeypatch.setenv("DATACOOKER_ADMISSION_START", "junk")
+    assert _start_target(112) == 1
+    # the memory gate still halves a wide start
+    a = Admission(112, target=32)
+    a.observe(0.8, 0)
+    assert a.target == 16

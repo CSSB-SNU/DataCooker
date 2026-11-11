@@ -51,6 +51,21 @@ class Admission:
         return pending == 0 or (pending < self.target and memory_fraction < 0.70)
 
 
+def _start_target(maximum: int) -> int:
+    """Return the initial active-task budget: 1 (grow from one task), or ``DATACOOKER_ADMISSION_START`` when set.
+
+    Growing by one per completed wave suits many small items. When every item is long (hours) the ramp alone keeps most
+    cores idle for most of the run; a caller that knows its tasks' memory sets a wider start. The memory gate (admission
+    pauses at 70 %, halves at 75 %) still applies.
+    """
+    raw = os.environ.get("DATACOOKER_ADMISSION_START", "")
+    try:
+        start = int(raw) if raw else 1
+    except ValueError:
+        start = 1
+    return max(1, min(maximum, start))
+
+
 def _resolve(qualname: str) -> Any:
     module_name, attr = qualname.rsplit(".", 1)
     return getattr(import_module(module_name), attr)
@@ -163,7 +178,7 @@ def iter_ray_chunks(
                 },
             )
         maximum = min(maximum, max(1, int(ray.cluster_resources().get("CPU", 1))))
-        admission = Admission(maximum)
+        admission = Admission(maximum, target=_start_target(maximum))
         state_ref = ray.put(state)
         run_id = uuid.uuid4().hex
         remote = ray.remote(max_retries=max_task_retries, num_cpus=1)(_run_batch)
