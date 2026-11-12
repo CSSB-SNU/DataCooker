@@ -31,6 +31,7 @@ class PipelineConfig:
     expansion: float = 100.0                 # E, per-recipe (measured)
     node: NodeSpec = field(default_factory=NodeSpec)
     schema: str = "unknown"
+    codec: str = "biomol_zstd"               # value codec recorded in meta.json (the index step)
     map_size: int = 300_000_000_000
     merge_on_duplicate: str = "error"
     run_id: str = field(default_factory=lambda: uuid4().hex, init=False)
@@ -131,7 +132,7 @@ def run(
     return executor.run_once(
         name=f"{cfg.target.stem}_index",
         argv=[*CLI, "index", str(cfg.target),
-              "--schema", cfg.schema,
+              "--schema", cfg.schema, "--codec", cfg.codec,
               *(["--source", str(cfg.source)] if cfg.source else []),
               "--expansion", str(cfg.expansion)],
         mem_gb=min(64, int(cfg.node.mem_gb)), cores=min(8, cfg.node.cores),

@@ -439,6 +439,7 @@ def index_command(
 @click.option("--include-keys", type=click.Path(exists=True, path_type=Path), default=None,
               help="rebuild only: restrict to this key subset (e.g. a date-scoped set)")
 @click.option("--schema", default="unknown")
+@click.option("--codec", default="biomol_zstd", help="value codec recorded in meta.json")
 @click.option("--node-mem-gb", type=click.FloatRange(min=1), default=490.0, envvar="DATACOOKER_NODE_MEM_GB")
 @click.option("--cores", type=click.IntRange(min=1), default=112, envvar="DATACOOKER_CPUS_PER_NODE")
 @click.option("--n-nodes", type=click.IntRange(min=1), default=8, envvar="DATACOOKER_MAX_NODES")
@@ -453,6 +454,7 @@ def pipeline_command(
     expansion: float,
     include_keys: Path | None,
     schema: str,
+    codec: str,
     node_mem_gb: float,
     cores: int,
     n_nodes: int,
@@ -525,7 +527,7 @@ def pipeline_command(
         (Path(workdir) / "input-selection.json").write_text(json.dumps(duplicates, indent=2))
     pcfg = PipelineConfig(
         op=op, source=source, target=target, engine_config=engine_config,
-        expansion=expansion, schema=schema,
+        expansion=expansion, schema=schema, codec=codec,
         node=NodeSpec(mem_gb=node_mem_gb, cores=cores, n_nodes=n_nodes),
         map_size=int(raw.get("map_size", 300_000_000_000)),
     )
